@@ -9,6 +9,9 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from pydantic import BaseModel, Field
 from langchain_core.runnables import RunnablePassthrough
+import urllib3
+# 禁用 SSL 警告
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class NewsURLs(BaseModel):
     """新闻URL列表输出模型"""
