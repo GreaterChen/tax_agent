@@ -1,7 +1,6 @@
 """基于 LangChain 的智能新闻爬虫 Agent"""
 from typing import List, Dict
-import asyncio
-import aiohttp
+import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 from sqlalchemy import create_engine, text
@@ -9,10 +8,7 @@ from langchain_community.chat_models import ChatZhipuAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from pydantic import BaseModel, Field
-from concurrent.futures import ThreadPoolExecutor
 from langchain_core.runnables import RunnablePassthrough
-
-semaphore = asyncio.Semaphore(1)
 
 class NewsURLs(BaseModel):
     """新闻URL列表输出模型"""
@@ -61,14 +57,17 @@ class NewsCrawlerAgent:
             请提取以下字段：
             1. 标题：新闻的主标题
             2. 正文内容：新闻的主要内容，去除广告和无关信息
-            3. 发布日期：新闻的发布时间
+            3. 发布日期：新闻的发布时间，必须转换为标准的 ISO 8601 格式 (YYYY-MM-DD)
+               - 如果原文日期包含具体时间，只保留日期部分
+               - 如果原文日期使用中文或其他格式，需要转换为此标准格式
+               - 示例：2024-03-15
             
             请确保提取的内容准确完整，并去除HTML标签和多余的空白字符。
             请只返回以下格式的 JSON：
             {{
             "title": "新闻标题",
             "content": "新闻正文",
-            "publish_date": "发布日期"
+            "publish_date": "YYYY-MM-DD"
             }}
             """),
             ("human", "{html_content}")
@@ -93,8 +92,8 @@ class NewsCrawlerAgent:
             | self.content_parser
         )
             
-    async def fetch_html(self, url: str, session: aiohttp.ClientSession) -> str:
-        """异步获取网页HTML内容"""
+    def fetch_html(self, url: str) -> str:
+        """同步获取网页HTML内容"""
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -109,15 +108,14 @@ class NewsCrawlerAgent:
             'Cache-Control': 'max-age=0'
         }
         try:
-            async with session.get(url, timeout=30, headers=headers, verify_ssl=False) as response:
-                if response.status == 200:
-                    return await response.text()
-                else:
-                    print(f"获取页面失败 {url}: HTTP {response.status}")
-                    print(f"Response headers: {response.headers}")
-                    content = await response.text()
-                    print(f"Response content: {content[:500]}...")  # 只打印前500个字符
-                    return ""
+            response = requests.get(url, timeout=30, headers=headers, verify=False)
+            if response.status_code == 200:
+                return response.text
+            else:
+                print(f"获取页面失败 {url}: HTTP {response.status_code}")
+                print(f"Response headers: {response.headers}")
+                print(f"Response content: {response.text[:500]}...")  # 只打印前500个字符
+                return ""
         except Exception as e:
             print(f"获取页面失败 {url}: {str(e)}")
             return ""
@@ -182,40 +180,36 @@ class NewsCrawlerAgent:
             else:
                 print(f"新闻已存在,跳过: {data['url']}")
                 
-    async def process_news_url(self, url: str, session: aiohttp.ClientSession, source: Dict):
+    def process_news_url(self, url: str, source: Dict):
         """处理单个新闻URL"""
-        html_content = await self.fetch_html(url, session)
+        html_content = self.fetch_html(url)
         if html_content:
             news_data = self.extract_news_content(html_content)
-            if news_data:
+            if news_data:   # TODO 出错处理
                 source_with_url = dict(source)
                 source_with_url["url"] = url
                 self.save_to_db(news_data, source_with_url)
                 
-    async def crawl_news(self, source: Dict):
+    def crawl_news(self, source: Dict):
         """爬取单个来源的新闻
         
         Args:
             source: 包含url、language等信息的字典
         """
         try:
-            async with aiohttp.ClientSession() as session:
-                # 获取主页HTML
-                html_content = await self.fetch_html(source["url"], session)
-                if not html_content:
-                    return
-                    
-                # 提取新闻URL列表
-                news_urls = self.extract_news_urls(html_content)
-                if not news_urls:   # TODO 出错处理
-                    return
-                    
-                # 并行处理所有新闻URL
-                tasks = [
-                    self.process_news_url(url, session, source)
-                    for url in news_urls
-                ]
-                await asyncio.gather(*tasks)
+            # 获取主页HTML
+            html_content = self.fetch_html(source["url"])
+            if not html_content:    # TODO 出错处理
+                return
+                
+            # 提取新闻URL列表
+            news_urls = self.extract_news_urls(html_content)
+            if not news_urls:
+                return
+                
+            # 串行处理所有新闻URL
+            for url in news_urls:
+                self.process_news_url(url, source)
                 
         except Exception as e:
             print(f"爬取失败 {source['source']}: {str(e)}")
@@ -241,8 +235,8 @@ class NewsCrawlerAgent:
             for row in results
         ]
         
-    async def crawl_all(self):
+    def crawl_all(self):
         """爬取所有来源的新闻"""
         sources = self.get_source_list()
         for source in sources:
-            await self.crawl_news(source) 
+            self.crawl_news(source) 

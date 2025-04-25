@@ -2,7 +2,6 @@
 import os
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
-import asyncio
 from .news_crawler_agent import NewsCrawlerAgent
 
 class NewsCrawler:
@@ -22,7 +21,7 @@ class NewsCrawler:
         
     def crawl_all(self):
         """爬取所有来源的新闻"""
-        asyncio.run(self.agent.crawl_all())
+        self.agent.crawl_all()
             
     def start(self):
         """启动定时任务"""
