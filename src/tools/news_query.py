@@ -1,77 +1,66 @@
-"""新闻查询工具实现"""
-from typing import Dict, Optional
+import os
+from typing import Union
 from datetime import datetime
-from langchain_core.tools import tool
+from langchain_core.tools import StructuredTool
 from sqlalchemy import create_engine, text
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+# 输入模型
 class NewsQueryInput(BaseModel):
-    """新闻查询输入模型"""
-    language: str
-    source: str
-    date: str
-    
+    """新闻查询输入"""
+    language: str = Field(..., description="语言代码，取值范围：zh_sim / zh_hk / eng")
+    number: int = Field(..., description="需要返回的新闻数量", ge=1, le=10)
+
+# 输出模型
 class NewsQueryOutput(BaseModel):
-    """新闻查询输出模型"""
+    """新闻查询结果"""
     content: str
     url: str
+    source: str
+    date: str
+
+class NewsQueryError(BaseModel):
+    """错误结果"""
+    error: str
 
 class NewsQueryTool:
-    """新闻查询工具类"""
-    
     def __init__(self, db_url: str):
-        """初始化数据库连接
-        
-        Args:
-            db_url: 数据库连接URL
-        """
         self.engine = create_engine(db_url)
-        
-    @tool("news_query")
-    def query(self, language: str, source: str, date: str) -> Dict[str, str]:
-        """从数据库查询新闻
-        
-        Args:
-            language: 语言代码 (zh_sim/zh_hk/eng)
-            source: 新闻来源
-            date: 日期 (格式: YYYYMMDD)
-            
-        Returns:
-            Dict[str, str]: 包含新闻内容和URL的字典
-        """
+
+    def query(self, language: str, number: int) -> str:
+        """根据语言和指定数量从新闻数据库中查询最新的新闻内容和链接"""
         try:
-            # 验证日期格式
-            datetime.strptime(date, "%Y%m%d")
-            
-            # 构建SQL查询
             query = text("""
-                SELECT content, url 
+                SELECT content, url, source, date 
                 FROM news 
                 WHERE language = :language 
-                AND source = :source 
-                AND date = :date
-                ORDER BY id DESC 
-                LIMIT 1
+                ORDER BY date DESC, id DESC 
+                LIMIT :number
             """)
-            
-            # 执行查询
+
             with self.engine.connect() as conn:
-                result = conn.execute(
-                    query,
-                    {"language": language, "source": source, "date": date}
-                ).first()
-                
-            if result:
-                return {
-                    "content": result[0],
-                    "url": result[1]
-                }
+                results = conn.execute(query, {
+                    "language": language,
+                    "number": number
+                }).fetchall()
+
+            if results:
+                news_list = [
+                    f"[{i+1}] 来源：{row[2]} 日期：{row[3]}\n内容：{row[0]}\n链接：{row[1]}"
+                    for i, row in enumerate(results)
+                ]
+                return "\n\n".join(news_list)
             else:
-                return {
-                    "error": f"未找到符合条件的新闻: language={language}, source={source}, date={date}"
-                }
-                
-        except ValueError:
-            return {"error": "日期格式错误,应为YYYYMMDD"}
+                return "未找到符合条件的新闻记录。"
+
         except Exception as e:
-            return {"error": f"查询错误: {str(e)}"} 
+            return f"查询失败: {str(e)}"
+
+# 工具封装为 StructuredTool
+query_tool_instance = NewsQueryTool(os.getenv("DATABASE_URL"))
+news_query_tool = StructuredTool.from_function(
+    func=query_tool_instance.query,
+    name="news_query",
+    description="根据语言代码和数量查询新闻内容",
+    args_schema=NewsQueryInput
+)

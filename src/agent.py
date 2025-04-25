@@ -9,9 +9,10 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.checkpoint.memory import MemorySaver
+from langchain_core.tools import StructuredTool
 
 from src.tools.calculator import calculate
-from src.tools.news_query import NewsQueryTool
+from src.tools.news_query import news_query_tool
 
 def check_environment():
     required_vars = {
@@ -49,7 +50,7 @@ class TaxAgent:
 
         self.tools = [
             calculate,
-            NewsQueryTool(os.getenv("DATABASE_URL")).query
+            news_query_tool
         ]
 
         system_prompt = """你是一个专业的税务顾问助手。你可以:
