@@ -102,7 +102,3 @@ curl -X POST "http://localhost:8000/query" \
 2. 工具系统支持热插拔,便于扩展
 3. 新闻爬虫每天凌晨2点自动运行
 4. 所有响应使用中文
-
-## License
-
-MIT 

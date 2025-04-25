@@ -1,46 +1,25 @@
-"""计算器工具实现"""
-from typing import Dict
+from typing import TypedDict, Union
 from langchain_core.tools import tool
-import ast
-import operator
 
-# 支持的运算符
-OPERATORS = {
-    ast.Add: operator.add,
-    ast.Sub: operator.sub,
-    ast.Mult: operator.mul,
-    ast.Div: operator.truediv,
-    ast.Pow: operator.pow,
-}
+class CalcResult(TypedDict):
+    result: float
 
-class Calculator(ast.NodeVisitor):
-    """计算器类,用于解析和计算数学表达式"""
-    
-    def visit_BinOp(self, node):
-        """处理二元运算"""
-        left = self.visit(node.left)
-        right = self.visit(node.right)
-        return OPERATORS[type(node.op)](left, right)
-    
-    def visit_Num(self, node):
-        """处理数字"""
-        return node.n
+class CalcError(TypedDict):
+    error: str
 
-@tool("calculator")
-def calculate(operation: str) -> Dict[str, float]:
+@tool
+def calculate(operation: str) -> Union[CalcResult, CalcError]:
     """计算数学表达式的结果
-    
+
     Args:
-        operation: 要计算的数学表达式,如 "1 + 2 * (3 + 4^2)"
-        
+        operation: 数学表达式字符串，支持Python标准运算符：+ (加法), - (减法), * (乘法), / (除法), ** (幂运算), 例如 "2 + 3 * 5"
+
     Returns:
-        Dict[str, float]: 包含计算结果的字典
+        result: 如果计算成功，返回结果值。
+        error: 如果计算失败，返回错误信息。
     """
     try:
-        # 解析表达式
-        tree = ast.parse(operation, mode='eval')
-        # 计算结果
-        result = Calculator().visit(tree.body)
+        result = eval(operation)
         return {"result": float(result)}
     except Exception as e:
-        return {"error": f"计算错误: {str(e)}"} 
+        return {"error": f"计算错误: {str(e)}"}
