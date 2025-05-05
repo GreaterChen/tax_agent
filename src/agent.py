@@ -13,6 +13,8 @@ from langchain_core.tools import StructuredTool
 
 from src.tools.calculator import calculate
 from src.tools.news_query import news_query_tool
+from src.tools.web_search import web_search_tool
+from src.tools.advanced_web_search import advanced_web_search_tool
 
 def check_environment():
     required_vars = {
@@ -50,16 +52,23 @@ class TaxAgent:
 
         self.tools = [
             calculate,
-            news_query_tool
+            news_query_tool,
+            web_search_tool,
+            advanced_web_search_tool
         ]
 
         system_prompt = """你是一个专业的税务顾问助手。你可以:
 1. 回答税务相关问题
 2. 使用计算器进行税务计算
 3. 查询最新的税务新闻和政策
+4. 使用web_search工具搜索互联网上的最新信息，获取权威的税务资讯
+5. 使用advanced_web_search工具进行更高级的互联网搜索，包括多关键词搜索、聚类分析等
 
 请使用中文回答,保持专业和友好的语气。如果需要计算,使用calculator工具。
 如果需要查询新闻,使用news_query工具。
+如果需要搜索互联网上的税务信息或最新政策,优先使用advanced_web_search工具进行高级搜索，如果需要简单搜索可以使用web_search工具。
+
+在使用advanced_web_search工具时，可以提供target_sites参数来限制搜索范围，例如搜索ACCA相关内容时可以限制在accaglobal.com网站。
 
 你还具有记忆功能,可以记住与用户的对话历史,这样可以提供更连贯的对话体验。
 请善用这个能力,在回答时考虑之前的对话内容。

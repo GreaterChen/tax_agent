@@ -23,8 +23,12 @@ class NewsCrawler:
         """爬取所有来源的新闻"""
         self.agent.crawl_all()
             
-    def start(self):
-        """启动定时任务"""
+    def start(self, run_immediately=False):
+        """启动定时任务
+        
+        Args:
+            run_immediately: 是否立即执行一次爬取任务
+        """
         # 每天凌晨2点执行
         self.scheduler.add_job(
             self.crawl_all,
@@ -33,6 +37,11 @@ class NewsCrawler:
             minute=0
         )
         self.scheduler.start()
+        
+        # 立即执行一次爬取
+        if run_immediately:
+            print("立即执行一次爬取任务...")
+            self.crawl_all()
         
     def stop(self):
         """停止定时任务"""
