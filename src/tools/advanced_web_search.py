@@ -28,6 +28,9 @@ import spacy
 from spacy.language import Language
 from spacy.tokens import Doc
 import langdetect
+from rank_bm25 import BM25Okapi
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 
 # 导入LangChain的文档加载器
 from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
@@ -51,14 +54,13 @@ DEFAULT_NEWS_SOURCES = [
 class AdvancedWebSearchInput(BaseModel):
     """高级网络搜索查询输入"""
     query: str = Field(..., description="用户的原始问题")
-    target_sites: Optional[List[str]] = Field(DEFAULT_NEWS_SOURCES, description="限制搜索的目标网站列表")
     max_results_per_query: int = Field(3, description="每个检索词返回的最大结果数")
 
 class AdvancedWebSearchTool:
     def __init__(self):
         """初始化搜索工具及LLM"""
         self.llm = ChatTongyi(
-            model="qwen-max",
+            model="qwen-long",
             api_key=os.getenv("DASHSCOPE_API_KEY")
         )
         
@@ -172,8 +174,8 @@ class AdvancedWebSearchTool:
         nlp = self._get_nlp_model(lang)
         
         # 针对文本长度进行安全处理
-        if len(text) > 10000:
-            text = text[:10000]  # 避免处理过长文本
+        if len(text) > 100000:
+            text = text[:100000]  # 避免处理过长文本
         
         # 处理文本
         doc = nlp(text)
@@ -238,129 +240,90 @@ class AdvancedWebSearchTool:
             预处理后的查询
         """
         processed_query = query
-        
-        # 对特定语言的查询进行优化
-        if lang.startswith('zh'):
-            # 中文查询优化：保留完整的中文词组
-            pass  # 实际上不需要特殊处理，保持原样
-        elif lang == 'en':
-            # 英文查询优化：转为小写
+        if lang == 'en':
             processed_query = query.lower()
-        
         return processed_query
 
-    def _hybrid_retrieval(self, query: str, documents: List[Document], top_k: int = 3) -> List[Document]:
-        """使用LangChain实现混合检索（向量检索+关键词检索）
-        
-        Args:
-            query: 搜索查询
-            documents: 文档列表
-            top_k: 返回结果数量
-            
-        Returns:
-            最相关的文档列表
-        """
-        # 检测查询语言
-        query_lang = self._detect_language(query)
-        
-        # 对查询预处理
-        processed_query = self._preprocess_query_for_language(query, query_lang)
-        
-        # 创建向量存储
-        vectorstore = FAISS.from_documents(documents, self.embeddings)
-        
-        # 向量检索
-        vector_results = vectorstore.similarity_search(processed_query, k=top_k*2)
-        
-        # 关键词检索
-        keyword_scores = {}
-        for doc in documents:
-            # 计算关键词相似度
-            score = self._keyword_similarity(processed_query, doc.page_content)
-            keyword_scores[doc.page_content] = score
-        
-        # 混合排序
-        hybrid_scores = {}
-        for doc in documents:
-            # 检查是否在向量检索结果中
-            vector_score = 0.0
-            for i, vector_doc in enumerate(vector_results):
-                if doc.page_content == vector_doc.page_content:
-                    # 计算归一化的向量分数 (越小的索引，分数越高)
-                    vector_score = 1.0 - (i / len(vector_results))
-                    break
-            
-            # 获取关键词分数
-            keyword_score = keyword_scores.get(doc.page_content, 0.0)
-            
-            # 根据查询语言调整权重
-            if query_lang.startswith('zh'):
-                # 中文：更重视关键词匹配
-                hybrid_scores[doc.page_content] = 0.5 * vector_score + 0.5 * keyword_score
-            else:
-                # 英文：均衡权重
-                hybrid_scores[doc.page_content] = 0.6 * vector_score + 0.4 * keyword_score
-        
-        # 排序
-        sorted_docs = sorted(
-            [(doc, hybrid_scores.get(doc.page_content, 0.0)) for doc in documents],
-            key=lambda x: x[1],
-            reverse=True
-        )
-        
-        # 返回top_k结果
-        return [doc for doc, score in sorted_docs[:top_k]]
-
-    def _generate_search_queries(self, original_query: str, target_sites: Optional[List[str]] = None) -> List[Dict]:
-        """生成3组搜索查询
+    def _generate_search_queries(self, original_query: str) -> List[Dict]:
+        """生成搜索查询
         
         Args:
             original_query: 用户原始查询
-            target_sites: 目标网站列表
             
         Returns:
-            3组搜索查询列表
+            包含原始查询和生成的查询列表
         """
-        if target_sites is None:
-            target_sites = self.default_news_sources
+        target_sites = self.default_news_sources
+        
+        # 检测查询语言
+        query_lang = self._detect_language(original_query)
+        
+        # 根据语言选择提示模板
+        if query_lang.startswith('zh'):
+            prompt_text = """
+            请基于以下原始问题生成2组不同的中文搜索查询词，以便获得更全面的搜索结果。
             
-        prompt_text = """
-        请基于以下原始问题生成3组不同的搜索查询词，以便获得更全面的搜索结果。
+            原始问题: {0}
+            
+            {1}
+            
+            生成的查询词要求：
+            1. 必须使用中文
+            2. 提取原始问题中的核心概念和关键词
+            3. 使用同义词或相关术语进行扩展
+            4. 针对不同角度生成特定查询
+            5. 简洁明了，去除不必要的词语
+            6. 适合网络搜索引擎使用
+            
+            请以JSON格式返回结果，格式如下:
+            ```json
+            [
+              {{
+                "query": "中文查询词1",
+                "explanation": "此查询词的目的解释"
+              }},
+              {{
+                "query": "中文查询词2",
+                "explanation": "此查询词的目的解释"
+              }}
+            ]
+            ```
+            """
+        else:
+            prompt_text = """
+            Please generate 2 different English search queries based on the original question below to get more comprehensive search results.
+            
+            Original Question: {0}
+            
+            {1}
+            
+            Requirements for generated queries:
+            1. Must be in English
+            2. Extract core concepts and keywords from the original question
+            3. Use synonyms or related terms for expansion
+            4. Generate specific queries from different angles
+            5. Be concise and remove unnecessary words
+            6. Suitable for search engines
+            
+            Please return the result in JSON format as follows:
+            ```json
+            [
+              {{
+                "query": "English query 1",
+                "explanation": "Purpose of this query"
+              }},
+              {{
+                "query": "English query 2",
+                "explanation": "Purpose of this query"
+              }}
+            ]
+            ```
+            """
         
-        原始问题: {0}
-        
-        {1}
-        
-        生成的查询词应该：
-        1. 提取原始问题中的核心概念和关键词
-        2. 使用同义词或相关术语进行扩展
-        3. 针对不同角度生成特定查询
-        4. 简洁明了，去除不必要的词语
-        5. 适合网络搜索引擎使用
-        
-        请以JSON格式返回结果，格式如下:
-        ```json
-        [
-          {{
-            "query": "查询词1",
-            "explanation": "此查询词的目的解释"
-          }},
-          {{
-            "query": "查询词2",
-            "explanation": "此查询词的目的解释"
-          }},
-          {{
-            "query": "查询词3",
-            "explanation": "此查询词的目的解释"
-          }}
-        ]
-        ```
-        """
-        
-        sites_text = f"目标网站: {', '.join(target_sites)}" if target_sites else ""
+        sites_text = f"目标网站: {', '.join(target_sites)}" if query_lang.startswith('zh') else f"Target sites: {', '.join(target_sites)}"
         prompt = prompt_text.format(original_query, sites_text)
         
-        print("生成搜索查询词...")
+        print(f"生成{'中文' if query_lang.startswith('zh') else '英文'}搜索查询词...")
         response = self.llm.invoke(prompt)
         
         try:
@@ -372,60 +335,87 @@ class AdvancedWebSearchTool:
             
             search_queries = json.loads(json_str)
             
-            # 限制只返回3个查询
-            search_queries = search_queries[:3]
+            # 限制只返回2个生成的查询
+            search_queries = search_queries[:2]
             
             # 为每个查询添加目标网站
-            if target_sites:
-                for query in search_queries:
-                    query["target_sites"] = target_sites
+            for query in search_queries:
+                query["target_sites"] = target_sites
             
-            print(f"生成了 {len(search_queries)} 组搜索查询")
+            # 添加原始查询到查询列表的开头
+            original_query_dict = {
+                "query": original_query,
+                "explanation": "原始查询" if query_lang.startswith('zh') else "Original query",
+                "target_sites": target_sites
+            }
+            search_queries.insert(0, original_query_dict)
+            
+            print(f"生成了 {len(search_queries)} 组搜索查询（包括原始查询）" if query_lang.startswith('zh') else 
+                  f"Generated {len(search_queries)} search queries (including original query)")
             return search_queries
             
         except Exception as e:
-            print(f"解析搜索查询词失败: {str(e)}")
+            error_msg = f"解析搜索查询词失败: {str(e)}" if query_lang.startswith('zh') else f"Failed to parse search queries: {str(e)}"
+            print(error_msg)
             # 回退方案
             fallback_queries = [
-                {"query": original_query, "explanation": "原始查询", "target_sites": target_sites if target_sites else self.default_news_sources}
+                {
+                    "query": original_query, 
+                    "explanation": "原始查询" if query_lang.startswith('zh') else "Original query", 
+                    "target_sites": target_sites
+                }
             ]
             return fallback_queries
 
-    def _extract_keywords(self, text: str) -> List[str]:
-        """提取文本中的关键词
+    def _hybrid_retrieval_pdf(self, query: str, documents: List[Document], top_k: int = 3) -> List[Document]:
+        """针对PDF文档的混合检索（余弦相似度 + BM25）
         
         Args:
-            text: 输入文本
+            query: 搜索查询
+            documents: 文档列表
+            top_k: 返回结果数量
             
         Returns:
-            关键词列表
+            最相关的文档列表
         """
-        # 使用LLM提取关键词
-        prompt = f"""
-        请从以下文本中提取关键词（包括专业术语、实体名词等），以JSON数组格式返回。
-        注意：
-        1. 关键词应该是独立的词或短语
-        2. 包括专业术语、实体名词、重要动词等
-        3. 去除停用词和无意义词语
-        
-        文本：{text}
-        
-        请按如下格式返回：
-        ```json
-        ["关键词1", "关键词2", "关键词3", ...]
-        ```
-        """
-        
-        try:
-            response = self.llm.invoke(prompt)
-            json_match = re.search(r'```json\s*([\s\S]*?)\s*```', response.content)
-            if json_match:
-                keywords = json.loads(json_match.group(1))
-                return keywords
+        if not documents:
             return []
-        except Exception as e:
-            print(f"提取关键词失败: {str(e)}")
-            return []
+            
+        # 准备文档内容
+        texts = [doc.page_content for doc in documents]
+        
+        # 1. 余弦相似度计算
+        # 获取查询和文档的嵌入向量
+        query_embedding = self.embeddings.embed_query(query)
+        doc_embeddings = self.embeddings.embed_documents(texts)
+        
+        # 计算余弦相似度
+        cosine_scores = cosine_similarity(
+            [query_embedding], 
+            doc_embeddings
+        )[0]
+        
+        # 2. BM25检索
+        # 对文档进行分词
+        tokenized_texts = [text.split() for text in texts]  # 简单分词，可以根据语言改进
+        bm25 = BM25Okapi(tokenized_texts)
+        
+        # 对查询进行分词并计算BM25分数
+        tokenized_query = query.split()
+        bm25_scores = np.array(bm25.get_scores(tokenized_query))
+        
+        # 归一化分数
+        cosine_scores = (cosine_scores - cosine_scores.min()) / (cosine_scores.max() - cosine_scores.min() + 1e-8)
+        bm25_scores = (bm25_scores - bm25_scores.min()) / (bm25_scores.max() - bm25_scores.min() + 1e-8)
+        
+        # 3. 混合排序（简单加权）
+        final_scores = 0.6 * cosine_scores + 0.4 * bm25_scores
+        
+        # 获取top_k文档的索引
+        top_indices = np.argsort(final_scores)[-top_k:][::-1]
+        
+        # 返回排序后的文档
+        return [documents[i] for i in top_indices]
 
     def _process_pdf_content(self, pdf_content: bytes, query: str) -> List[str]:
         """处理PDF内容并返回相关片段
@@ -438,11 +428,10 @@ class AdvancedWebSearchTool:
             相关文本片段列表
         """
         try:
-            # 使用uuid创建唯一的临时文件名避免并发冲突
+            # 创建唯一的临时文件
             import uuid
             import tempfile
             
-            # 创建唯一的临时文件
             temp_dir = tempfile.gettempdir()
             unique_filename = f"pdf_{uuid.uuid4().hex}.pdf"
             temp_pdf_path = os.path.join(temp_dir, unique_filename)
@@ -468,15 +457,8 @@ class AdvancedWebSearchTool:
             # 分割文档
             split_docs = self.text_splitter.split_documents(documents)
             
-            # 创建向量存储
-            vectorstore = FAISS.from_documents(split_docs, self.embeddings)
-            
-            # 检索相关文档
-            retrieved_docs = vectorstore.similarity_search(
-                query, 
-                k=3, 
-                fetch_k=5
-            )
+            # 使用混合检索获取相关文档
+            retrieved_docs = self._hybrid_retrieval_pdf(query, split_docs, top_k=5)
             
             # 提取文本内容
             relevant_chunks = [doc.page_content for doc in retrieved_docs]
@@ -546,9 +528,16 @@ class AdvancedWebSearchTool:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
+            
+            # 配置代理
+            proxies = {
+                'http': 'http://127.0.0.1:7890',
+                'https': 'http://127.0.0.1:7890'
+            }
+            
             print(f"获取页面内容: {url}")
             
-            response = requests.get(url, timeout=15, headers=headers)
+            response = requests.get(url, timeout=15, headers=headers, proxies=proxies)
             response.raise_for_status()
             
             content_type = response.headers.get('Content-Type', '').lower()
@@ -628,7 +617,7 @@ class AdvancedWebSearchTool:
             分析结果
         """
         if not results_with_content:
-            return "未找到相关内容。"
+            return "未找到相关内容。" if self._detect_language(query).startswith('zh') else "No relevant content found."
         
         # 将结果转换为文档格式
         documents = []
@@ -643,22 +632,23 @@ class AdvancedWebSearchTool:
             
             # 创建文档
             doc = Document(
-                page_content=result.get("content", ""),  # 限制长度
+                page_content=result.get("content", ""),
                 metadata=metadata
             )
             documents.append(doc)
         
         # 使用混合检索获取最相关的文档
-        relevant_docs = self._hybrid_retrieval(query, documents, top_k=3)
+        relevant_docs = self._hybrid_retrieval_pdf(query, documents, top_k=5)
         
         # 构建提示内容
         context_str = ""
         for i, doc in enumerate(relevant_docs):
             domain = urlparse(doc.metadata["url"]).netloc
-            context_str += f"[来源 {i+1}] {doc.metadata['title']} ({domain})\n"
+            context_str += f"[Source {i+1}] {doc.metadata['title']} ({domain})\n"
             context_str += f"URL: {doc.metadata['url']}\n"
-            context_str += f"查询词: {doc.metadata['query']}\n"
-            context_str += f"内容: {doc.page_content}...\n\n"
+            context_str += f"Query: {doc.metadata['query']}\n"
+            context_str += f"Summary: {doc.metadata['snippet']}\n"
+            context_str += f"Content: {doc.page_content}...\n\n"
         
         # 检测查询语言
         query_lang = self._detect_language(query)
@@ -666,7 +656,7 @@ class AdvancedWebSearchTool:
         # 根据语言构建提示
         if query_lang.startswith('zh'):
             prompt_template = """
-            请根据以下搜索结果，为用户提供一个全面而准确的回答。
+            请根据以下搜索结果，用中文为用户提供一个全面而准确的回答。必须使用中文回答！
 
             用户查询: {question}
 
@@ -674,18 +664,20 @@ class AdvancedWebSearchTool:
             {context}
 
             要求:
-            1. 直接回答用户的问题
-            2. 综合所有来源中的相关信息
-            3. 引用信息来源，标明信息来自哪个网页
-            4. 如果不同来源有冲突信息，请指出这些不一致
-            5. 如果内容中没有足够的信息，请诚实地说明
-            6. 不要生成未在提供的内容中明确提到的信息
+            1. 必须使用中文回答
+            2. 直接回答用户的问题
+            3. 综合所有来源中的相关信息
+            4. 引用信息来源，标明信息来自哪个网页，必须包含完整的URL链接
+            5. 每个关键信息点后都应该添加对应的URL引用，格式为 [来源: URL]
+            6. 如果不同来源有冲突信息，请指出这些不一致
+            7. 如果内容中没有足够的信息，请诚实地说明
+            8. 不要生成未在提供的内容中明确提到的信息
 
-            请以专业、清晰的方式组织回答，避免不必要的重复。回答应基于事实，不要过度解释或猜测。
+            请以专业、清晰的方式组织回答，避免不必要的重复。回答应基于事实，不要过度解释或猜测。每个重要陈述都需要有相应的URL引用支持。
             """
         else:
             prompt_template = """
-            Based on the following search results, provide a comprehensive and accurate answer to the user's question.
+            Based on the following search results, provide a comprehensive and accurate answer in English. You MUST answer in English!
 
             User Query: {question}
 
@@ -693,14 +685,16 @@ class AdvancedWebSearchTool:
             {context}
 
             Requirements:
-            1. Answer the user's question directly
-            2. Integrate relevant information from all sources
-            3. Cite your sources, indicating which webpage the information comes from
-            4. If there are inconsistencies between sources, point them out
-            5. If there is insufficient information, honestly acknowledge it
-            6. Do not generate information not explicitly mentioned in the provided content
+            1. MUST answer in English
+            2. Answer the user's question directly
+            3. Integrate relevant information from all sources
+            4. Cite your sources by including the complete URL for each webpage referenced
+            5. Add URL citations after each key point in the format [Source: URL]
+            6. If there are inconsistencies between sources, point them out
+            7. If there is insufficient information, honestly acknowledge it
+            8. Do not generate information not explicitly mentioned in the provided content
 
-            Organize your answer in a professional and clear manner, avoiding unnecessary repetition. The answer should be fact-based without excessive explanation or speculation.
+            Organize your answer in a professional and clear manner, avoiding unnecessary repetition. The answer should be fact-based without excessive explanation or speculation. Each significant statement should be supported by a URL citation.
             """
         
         # 替换占位符
@@ -715,34 +709,34 @@ class AdvancedWebSearchTool:
             return response.content
         except Exception as e:
             print(f"回答生成失败: {str(e)}")
-            fallback_response = "分析内容时出现错误，以下是找到的信息摘要：\n\n"
+            error_msg = "分析内容时出现错误，以下是找到的信息摘要：\n\n" if query_lang.startswith('zh') else "Error occurred during analysis. Here is a summary of the information found:\n\n"
             for i, doc in enumerate(relevant_docs[:3]):
-                fallback_response += f"- {doc.metadata['title']}\n"
-                fallback_response += f"  来源: {doc.metadata['url']}\n"
-                fallback_response += f"  摘要: {doc.metadata['snippet']}\n\n"
-            return fallback_response
+                error_msg += f"- {doc.metadata['title']}\n"
+                error_msg += f"  Source: {doc.metadata['url']}\n"
+                error_msg += f"  Summary: {doc.metadata['snippet']}\n\n"
+            return error_msg
 
-    def _google_search(self, query: str, target_sites: Optional[List[str]] = None, num: int = 3) -> List[Dict]:
+    def _google_search(self, query: str, num: int = 5) -> List[Dict]:
         """执行Google搜索
         
         Args:
             query: 查询词
-            target_sites: 限制搜索的目标网站
             num: 返回结果数量
             
         Returns:
             搜索结果列表
         """
         # 检查缓存
-        cache_key = f"{query}_{'-'.join(target_sites) if target_sites else 'no_sites'}_{num}"
+        cache_key = f"{query}_{num}"
         if cache_key in self.result_cache:
             print(f"使用缓存的搜索结果: {query}")
             return self.result_cache[cache_key]
         
-        search_query = query
-        if target_sites and len(target_sites) > 0:
-            site_query = " OR ".join([f"site:{site}" for site in target_sites])
-            search_query = f"{query} ({site_query})"
+        # 直接使用默认目标网站
+        target_sites = self.default_news_sources
+        site_query = " OR ".join([f"site:{site}" for site in target_sites])
+        # search_query = f"{query} ({site_query})"
+        search_query = f'{query} ({site_query}) -filetype:pdf'
         
         url = "https://www.googleapis.com/customsearch/v1"
         params = {
@@ -755,7 +749,14 @@ class AdvancedWebSearchTool:
         print(f"执行Google搜索: {search_query}")
         
         try:
-            response = requests.get(url, params=params)
+            # 配置代理
+            proxies = {
+                'http': 'http://127.0.0.1:7890',
+                'https': 'http://127.0.0.1:7890'
+            }
+            
+            # 使用代理发送请求
+            response = requests.get(url, params=params, proxies=proxies, timeout=30)
             response.raise_for_status()
             search_results = response.json()
             
@@ -781,14 +782,11 @@ class AdvancedWebSearchTool:
             print(f"搜索失败: {str(e)}")
             return []
 
-    def search(self, query: str, 
-               target_sites: Optional[List[str]] = None, 
-               max_results_per_query: int = 3) -> str:
+    def search(self, query: str, max_results_per_query: int = 5) -> str:
         """执行高级搜索
         
         Args:
             query: 用户原始查询
-            target_sites: 限制搜索的目标网站列表
             max_results_per_query: 每个检索词返回的最大结果数
             
         Returns:
@@ -797,25 +795,23 @@ class AdvancedWebSearchTool:
         try:
             print(f"处理查询: {query}")
             
-            # 如果未指定目标网站，使用默认新闻来源
-            if target_sites is None:
-                target_sites = self.default_news_sources
-                
+            # 直接使用默认新闻来源
+            target_sites = self.default_news_sources
             print(f"目标网站: {', '.join(target_sites)}")
             
             # 1. 生成多组搜索查询
-            search_queries = self._generate_search_queries(query, target_sites)
+            search_queries = self._generate_search_queries(query)
+            search_queries = [search_queries[0]]
             
             # 2. 执行多组搜索
             all_search_results = []
             for search_query in search_queries:
                 query_text = search_query["query"]
-                query_sites = search_query.get("target_sites", target_sites)
                 
                 # 添加延迟以避免API限制
                 time.sleep(1)
                 
-                results = self._google_search(query_text, query_sites, max_results_per_query)
+                results = self._google_search(query_text, max_results_per_query)
                 all_search_results.extend(results)
             
             if not all_search_results:

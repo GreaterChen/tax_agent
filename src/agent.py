@@ -3,7 +3,7 @@ import os
 import sys
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
-from langchain_community.chat_models import ChatZhipuAI
+from langchain_community.chat_models import ChatZhipuAI, ChatTongyi
 from langgraph.prebuilt import create_react_agent, ToolNode, tools_condition
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -43,15 +43,14 @@ check_environment()
 
 class TaxAgent:
     def __init__(self):
-        self.llm = ChatZhipuAI(
-            model="glm-4-flash",
-            temperature=0.5,
-            zhipuai_api_key=os.getenv("ZHIPUAI_API_KEY")
+        self.llm = ChatTongyi(
+            model="qwen-long",
+            api_key=os.getenv("DASHSCOPE_API_KEY")
         )
 
         self.tools = [
             calculate,
-            news_query_tool,
+            # news_query_tool,
             advanced_web_search_tool
         ]
 
@@ -61,14 +60,23 @@ class TaxAgent:
 3. 查询最新的税务新闻和政策
 4. 使用advanced_web_search工具进行高级的互联网搜索
 
-请使用中文回答,保持专业和友好的语气。如果需要计算,使用calculator工具。
-如果需要查询新闻,使用news_query工具。
-如果需要搜索互联网上的税务信息或最新政策,优先使用advanced_web_search工具进行高级搜索，询问时问题要叙述清晰，回答时需要携带信息来源。
+语言要求：
+- 如果用户使用中文提问，请使用中文回答
+- 如果用户使用英文提问，请使用英文回答
+- 保持回答语言与提问语言一致
 
-你还具有记忆功能,可以记住与用户的对话历史,这样可以提供更连贯的对话体验。
-请善用这个能力,在回答时考虑之前的对话内容。
+工具使用说明：
+- 需要计算时，使用calculator工具
+- 需要搜索互联网上的税务信息或最新政策时，优先使用advanced_web_search工具进行高级搜索, 只可以调用一次！一次可以获取5个搜索结果，如果一次搜索不到就不要尝试再搜索了
 
-确保回答准确、清晰,并在必要时引用相关法规或新闻来源。"""
+回答格式要求：
+1. 保持专业和友好的语气
+2. 问题要叙述清晰
+3. 每个关键信息点后都应该添加对应的URL引用
+   - 中文回答格式：[来源: URL]
+   - 英文回答格式：[Source: URL]
+4. 确保引用的信息来源可靠且最新
+5. 如果实在检索不到相关的信息，也可以通过你自己已有的知识回答，但是要明确说明没有检索到相关信息"""
 
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),

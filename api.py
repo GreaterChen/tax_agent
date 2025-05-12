@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from contextlib import asynccontextmanager
 import os
+import uuid
 
 from src.agent import TaxAgent
 from src.scheduler.news_crawler import NewsCrawler
@@ -51,8 +52,8 @@ async def query(question: Question):
         Answer: 包含回答列表和线程ID的响应
     """
     try:
-        # 使用提供的thread_id或生成新的
-        thread_id = question.thread_id or f"thread_{len(question.text)}"
+        # 使用提供的thread_id或生成新的uuid
+        thread_id = question.thread_id or f"thread_{uuid.uuid4().hex}"
         
         answers = agent.query(question.text, thread_id)
         return Answer(answers=answers, thread_id=thread_id)

@@ -1,132 +1,100 @@
-# 税务问答Agent系统
+# 高级网页搜索工具 (Advanced Web Search Tool)
 
-基于LangChain和FastAPI开发的智能税务问答系统，支持税务计算和新闻查询。
+## 功能概述
 
-## 功能特点
+这是一个专门针对税务领域的高级网页搜索工具，支持多语言（中文、英文）搜索和内容处理。该工具主要用于从指定的税务相关网站获取信息，并通过智能处理提供准确的搜索结果。
 
-- 基于智谱AI GLM-4-flash模型的智能问答
-- 支持数学计算(四则运算、括号优先级)
-- 自动爬取和查询税务新闻
-- RESTful API接口
-- 定时更新新闻数据
-- 支持多轮对话记忆功能
-- 使用LangSmith进行对话追踪和监控
+## 默认信息源
 
-## 系统架构
+工具默认从以下权威网站搜索信息：
+- ACCA官网 (accaglobal.com/hk)
+- HKICPA官网 (hkicpa.org.hk)
+- 香港税务局官网 (ird.gov.hk/eng)
+- 国家税务总局官网 (chinatax.gov.cn/chinatax/)
 
-- 后端框架: FastAPI 0.110.0
-- LLM框架: 
-  - LangChain 0.1.12
-  - LangGraph 0.0.26
-- 大语言模型: 智谱AI GLM-4-flash
-- 数据库: MySQL (SQLAlchemy 2.0.28)
-- 定时任务: APScheduler 3.10.4
-- 向量检索: FAISS
+## 处理流程
 
-## 目录结构
+### 1. 查询预处理
+1. 接收用户原始查询
+2. 使用 LLM 生成多组搜索查询词
+   - 提取核心概念和关键词
+   - 使用同义词扩展
+   - 针对不同角度生成特定查询
 
-```
-.
-├── src/                   # 源代码目录
-│   ├── tools/            # 工具实现
-│   │   ├── calculator.py # 计算器工具
-│   │   └── news_query.py # 新闻查询工具
-│   ├── scheduler/        # 定时任务
-│   │   ├── news_crawler.py # 新闻爬虫
-│   │   └── news_crawler_agent.py # 爬虫具体实现
-│   └── agent.py         # Agent核心实现
-├── .env                 # 环境变量配置
-├── api.py              # FastAPI接口
-├── requirements.txt    # 依赖包列表
-└── README.md          # 项目说明
-```
+### 2. 搜索执行
+1. 使用 Google Custom Search API 执行搜索
+2. 对每个生成的查询词进行搜索
+3. 结果去重和初步过滤
 
-## 快速开始
+### 3. 内容获取和处理
 
-1. 安装依赖:
+#### 3.1 PDF文档处理
+1. 使用 PyPDFLoader 加载PDF内容
+2. 使用 RecursiveCharacterTextSplitter 分割文档
+3. 混合检索（Hybrid Retrieval）
+   - 余弦相似度计算（60%权重）
+     * 使用 multilingual-e5-large 模型生成向量
+     * 计算查询与文档片段的相似度
+   - BM25检索（40%权重）
+     * 对文档进行分词
+     * 计算词频相关性
+   - 归一化和加权合并两种分数
+4. 返回最相关的文本片段
 
-```bash
-pip install -r requirements.txt
-```
+#### 3.2 网页内容处理
+1. 使用 BeautifulSoup 清理HTML内容
+   - 移除无关元素（脚本、样式、导航等）
+   - 提取纯文本内容
+2. 文本规范化
+   - 去除多余空白
+   - 限制文本长度（最大50000字符）
+3. 直接返回处理后的文本内容
 
-2. 配置环境变量:
+### 4. 结果分析和生成
+1. 将所有来源的内容转换为文档格式
+2. 提取元数据（标题、URL、摘要等）
+3. 使用 LLM 分析内容并生成回答
+   - 直接回答用户问题
+   - 综合多个来源的信息
+   - 提供信息来源引用
+   - 标注不同来源的冲突信息
+   - 指出信息不足的情况
 
-在`.env`文件中配置以下必要参数:
+## 特殊功能
 
-```
-# LangSmith配置
-LANGSMITH_TRACING=true
-LANGSMITH_API_KEY=your_api_key
-LANGSMITH_PROJECT=your_project_name
+### 多语言支持
+- 自动检测查询语言
+- 根据语言选择适当的处理策略
+- 支持中文（简体/繁体）和英文
 
-# API密钥
-ZHIPUAI_API_KEY=your_zhipuai_api_key
+### 缓存机制
+- 搜索结果缓存
+- 网页内容缓存
+- 避免重复请求相同资源
 
-# 数据库配置
-DATABASE_URL=mysql+pymysql://user:password@localhost:3306/database_name
+### 错误处理
+- 网络请求超时处理
+- 无效页面检测
+- 格式转换异常处理
 
-# 应用配置
-APP_ENV=development
-DEBUG=true
-```
+## 依赖项
+- langchain：核心框架
+- zhipuai/dashscope：LLM服务
+- beautifulsoup4：HTML处理
+- PyPDF2：PDF处理
+- rank_bm25：BM25算法实现
+- scikit-learn：余弦相似度计算
+- numpy：数值计算
+- spacy：文本处理
+- HuggingFace transformers：文本嵌入
 
-3. 初始化数据库:
+## 配置要求
+- Google Custom Search API 密钥
+- 通义千问/智谱AI API 密钥
+- Spacy 语言模型（en_core_web_sm, zh_core_web_sm）
 
-```sql
-CREATE DATABASE tax_news;
-
-CREATE TABLE news (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    language VARCHAR(10),
-    source VARCHAR(100),
-    date VARCHAR(10),
-    content TEXT,
-    url VARCHAR(500),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE news_sources (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    url VARCHAR(500),
-    language VARCHAR(10),
-    source_name VARCHAR(100),
-    info TEXT,
-    is_active BOOLEAN DEFAULT true,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-4. 启动服务:
-
-```bash
-uvicorn api:app --reload
-```
-
-## API文档
-
-启动服务后访问 http://localhost:8000/docs 查看API文档。
-
-### 示例请求
-
-```bash
-curl -X POST "http://localhost:8000/query" \
-     -H "Content-Type: application/json" \
-     -d '{"text": "我的本金500元, 年利率3%, 计算三年后我能拿到多少钱"}'
-```
-
-## 技术特点
-
-1. 基于LangGraph的ReAct架构实现Agent
-2. 支持工具的热插拔，便于扩展新功能
-3. 使用LangSmith进行对话追踪和性能监控
-4. 支持多轮对话上下文记忆
-5. 内置税务计算器和新闻查询工具
-6. 定时任务自动更新税务新闻数据
-7. 所有交互均使用中文
-
-## 注意事项
-
-1. 确保所有必要的环境变量都已正确配置
-2. 数据库需要提前创建并配置正确的访问权限
-3. 建议在开发环境下启用DEBUG模式
-4. 使用LangSmith追踪功能需要配置相应的API密钥
+## 使用限制
+- 每个检索词最大返回结果数：3
+- 最大处理PDF页数：无限制
+- 单个网页文本长度限制：50000字符
+- 需要网络连接访问外部API和网站
