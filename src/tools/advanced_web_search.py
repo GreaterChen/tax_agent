@@ -38,9 +38,9 @@ from langchain_community.document_loaders import BSHTMLLoader
 from langchain_text_splitters import HTMLSemanticPreservingSplitter
 from langchain_core.documents import Document
 
-# API配置
-CSE_API_KEY = 'AIzaSyDFYC1uxFUkjjxQg-DjMmECJCTu2JsE85I'
-CSE_ENGINE_ID = '45f253b7863e94f3f'
+# Bing API配置
+BING_API_KEY = '你的Bing API密钥'
+BING_CUSTOM_CONFIG_ID = '你的Bing自定义配置ID'
 
 # 默认新闻来源
 DEFAULT_NEWS_SOURCES = [
@@ -716,8 +716,8 @@ class AdvancedWebSearchTool:
                 error_msg += f"  Summary: {doc.metadata['snippet']}\n\n"
             return error_msg
 
-    def _google_search(self, query: str, num: int = 5) -> List[Dict]:
-        """执行Google搜索
+    def _bing_search(self, query: str, num: int = 5) -> List[Dict]:
+        """执行Bing搜索
         
         Args:
             query: 查询词
@@ -732,43 +732,32 @@ class AdvancedWebSearchTool:
             print(f"使用缓存的搜索结果: {query}")
             return self.result_cache[cache_key]
         
-        # 直接使用默认目标网站
-        target_sites = self.default_news_sources
-        site_query = " OR ".join([f"site:{site}" for site in target_sites])
-        # search_query = f"{query} ({site_query})"
-        search_query = f'{query} ({site_query}) -filetype:pdf'
-        
-        url = "https://www.googleapis.com/customsearch/v1"
+        url = "https://api.cognitive.microsoft.com/bing/v7.0/search"
+        headers = {
+            "Ocp-Apim-Subscription-Key": BING_API_KEY
+        }
         params = {
-            "key": CSE_API_KEY,
-            "cx": CSE_ENGINE_ID,
-            "q": search_query,
-            "num": num
+            "q": query,
+            "customconfig": BING_CUSTOM_CONFIG_ID,
+            "count": num
         }
         
-        print(f"执行Google搜索: {search_query}")
+        print(f"执行Bing搜索: {query}")
         
         try:
-            # 配置代理
-            proxies = {
-                'http': 'http://127.0.0.1:7890',
-                'https': 'http://127.0.0.1:7890'
-            }
-            
-            # 使用代理发送请求
-            response = requests.get(url, params=params, proxies=proxies, timeout=30)
+            response = requests.get(url, headers=headers, params=params)
             response.raise_for_status()
             search_results = response.json()
             
-            if "items" not in search_results:
+            if "webPages" not in search_results:
                 print("未找到搜索结果")
                 return []
                 
             results = []
-            for item in search_results.get("items", []):
+            for item in search_results.get("webPages", {}).get("value", []):
                 results.append({
-                    "title": item.get("title", ""),
-                    "link": item.get("link", ""),
+                    "title": item.get("name", ""),
+                    "link": item.get("url", ""),
                     "snippet": item.get("snippet", ""),
                     "query": query
                 })
@@ -811,7 +800,7 @@ class AdvancedWebSearchTool:
                 # 添加延迟以避免API限制
                 time.sleep(1)
                 
-                results = self._google_search(query_text, max_results_per_query)
+                results = self._bing_search(query_text, max_results_per_query)
                 all_search_results.extend(results)
             
             if not all_search_results:
