@@ -47,6 +47,11 @@ class TaxAgent:
             model="qwen-long",
             api_key=os.getenv("DASHSCOPE_API_KEY")
         )
+        # self.llm = ChatZhipuAI(
+        #     model="glm-4-flash",
+        #     temperature=0.5,
+        #     zhipuai_api_key=os.getenv("ZHIPUAI_API_KEY")
+        # )
 
         self.tools = [
             calculate,
@@ -67,7 +72,7 @@ class TaxAgent:
 
 工具使用说明：
 - 需要计算时，使用calculator工具
-- 需要搜索互联网上的税务信息或最新政策时，优先使用advanced_web_search工具进行高级搜索, 只可以调用一次！一次可以获取5个搜索结果，如果一次搜索不到就不要尝试再搜索了
+- 需要搜索互联网上的税务信息或最新政策时，优先使用advanced_web_search工具进行高级搜索, 搜索问题描述要详细清晰，只可以调用一次！一次可以获取5个搜索结果，如果一次搜索不到就不要尝试再搜索了
 
 回答格式要求：
 1. 保持专业和友好的语气

@@ -39,6 +39,15 @@ from langchain_text_splitters import HTMLSemanticPreservingSplitter
 from langchain_core.documents import Document
 
 # API配置
+from alibabacloud_tea_openapi.models import Config
+from alibabacloud_searchplat20240529.client import Client
+from alibabacloud_searchplat20240529.models import GetWebSearchRequest
+
+# API配置
+ALIYUN_API_KEY = 'OS-69n85n4c6v27922e'
+ALIYUN_ENDPOINT = 'default-0jqr.platform-cn-shanghai.opensearch.aliyuncs.com'
+ALIYUN_WORKSPACE = 'default'
+ALIYUN_SERVICE_ID = 'ops-web-search-001'
 CSE_API_KEY = 'AIzaSyDFYC1uxFUkjjxQg-DjMmECJCTu2JsE85I'
 CSE_ENGINE_ID = '45f253b7863e94f3f'
 
@@ -54,7 +63,6 @@ DEFAULT_NEWS_SOURCES = [
 class AdvancedWebSearchInput(BaseModel):
     """高级网络搜索查询输入"""
     query: str = Field(..., description="用户的原始问题")
-    max_results_per_query: int = Field(3, description="每个检索词返回的最大结果数")
 
 class AdvancedWebSearchTool:
     def __init__(self):
@@ -624,31 +632,32 @@ class AdvancedWebSearchTool:
         for result in results_with_content:
             # 提取元数据
             metadata = {
-                "title": result.get("title", ""),
                 "url": result.get("link", ""),
                 "snippet": result.get("snippet", ""),
-                "query": result.get("query", "")
+                "query": result.get("query", ""),
+                "content": result.get("content", "")
             }
+
+            documents.append(metadata)
             
             # 创建文档
-            doc = Document(
-                page_content=result.get("content", ""),
-                metadata=metadata
-            )
-            documents.append(doc)
+            # doc = Document(
+            #     page_content=result.get("content", ""),
+            #     metadata=metadata
+            # )
+            # documents.append(doc)
         
         # 使用混合检索获取最相关的文档
-        relevant_docs = self._hybrid_retrieval_pdf(query, documents, top_k=5)
+        # relevant_docs = self._hybrid_retrieval_pdf(query, documents, top_k=5)
         
         # 构建提示内容
         context_str = ""
-        for i, doc in enumerate(relevant_docs):
-            domain = urlparse(doc.metadata["url"]).netloc
-            context_str += f"[Source {i+1}] {doc.metadata['title']} ({domain})\n"
-            context_str += f"URL: {doc.metadata['url']}\n"
-            context_str += f"Query: {doc.metadata['query']}\n"
-            context_str += f"Summary: {doc.metadata['snippet']}\n"
-            context_str += f"Content: {doc.page_content}...\n\n"
+        for i, doc in enumerate(documents):
+            context_str += f"[Source {i+1}]"
+            context_str += f"URL: {doc['url']}\n"
+            context_str += f"Query: {doc['query']}\n"
+            context_str += f"Summary: {doc['snippet']}\n"
+            context_str += f"Content: {doc['content']}\n\n"
         
         # 检测查询语言
         query_lang = self._detect_language(query)
@@ -709,67 +718,56 @@ class AdvancedWebSearchTool:
             return response.content
         except Exception as e:
             print(f"回答生成失败: {str(e)}")
-            error_msg = "分析内容时出现错误，以下是找到的信息摘要：\n\n" if query_lang.startswith('zh') else "Error occurred during analysis. Here is a summary of the information found:\n\n"
-            for i, doc in enumerate(relevant_docs[:3]):
-                error_msg += f"- {doc.metadata['title']}\n"
-                error_msg += f"  Source: {doc.metadata['url']}\n"
-                error_msg += f"  Summary: {doc.metadata['snippet']}\n\n"
+            error_msg = "分析内容时出现错误"
             return error_msg
 
-    def _google_search(self, query: str, num: int = 5) -> List[Dict]:
-        """执行Google搜索
+    def _google_search(self, query: str) -> List[Dict]:
+        """执行阿里云联网搜索
         
         Args:
             query: 查询词
-            num: 返回结果数量
             
         Returns:
             搜索结果列表
         """
         # 检查缓存
-        cache_key = f"{query}_{num}"
+        cache_key = query
         if cache_key in self.result_cache:
             print(f"使用缓存的搜索结果: {query}")
             return self.result_cache[cache_key]
         
-        # 直接使用默认目标网站
-        target_sites = self.default_news_sources
-        site_query = " OR ".join([f"site:{site}" for site in target_sites])
-        # search_query = f"{query} ({site_query})"
-        search_query = f'{query} ({site_query}) -filetype:pdf'
-        
-        url = "https://www.googleapis.com/customsearch/v1"
-        params = {
-            "key": CSE_API_KEY,
-            "cx": CSE_ENGINE_ID,
-            "q": search_query,
-            "num": num
-        }
-        
-        print(f"执行Google搜索: {search_query}")
-        
         try:
-            # 配置代理
-            proxies = {
-                'http': 'http://127.0.0.1:7890',
-                'https': 'http://127.0.0.1:7890'
-            }
+            # 配置阿里云客户端
+            config = Config(
+                bearer_token="OS-69n85n4c6v27922e",
+                endpoint="default-0jqr.platform-cn-shanghai.opensearch.aliyuncs.com",
+                protocol="http"
+            )
+            client = Client(config=config)
             
-            # 使用代理发送请求
-            response = requests.get(url, params=params, proxies=proxies, timeout=30)
-            response.raise_for_status()
-            search_results = response.json()
+            # 创建请求
+            request = GetWebSearchRequest(
+                query=query,
+                way="full",
+                top_k=5
+            )
             
-            if "items" not in search_results:
+            print(f"执行阿里云联网搜索: {query}")
+            
+            # 发送请求
+            response = client.get_web_search("default", "ops-web-search-001", request)
+            search_results = response.body.to_map()
+            
+            if "result" not in search_results or "search_result" not in search_results["result"]:
                 print("未找到搜索结果")
                 return []
-                
+            
             results = []
-            for item in search_results.get("items", []):
+            for item in search_results["result"]["search_result"]:
                 results.append({
-                    "title": item.get("title", ""),
                     "link": item.get("link", ""),
                     "snippet": item.get("snippet", ""),
+                    "content": item.get("content", ""),
                     "query": query
                 })
             
@@ -782,12 +780,11 @@ class AdvancedWebSearchTool:
             print(f"搜索失败: {str(e)}")
             return []
 
-    def search(self, query: str, max_results_per_query: int = 5) -> str:
+    def search(self, query: str) -> str:
         """执行高级搜索
         
         Args:
             query: 用户原始查询
-            max_results_per_query: 每个检索词返回的最大结果数
             
         Returns:
             搜索结果分析
@@ -795,13 +792,8 @@ class AdvancedWebSearchTool:
         try:
             print(f"处理查询: {query}")
             
-            # 直接使用默认新闻来源
-            target_sites = self.default_news_sources
-            print(f"目标网站: {', '.join(target_sites)}")
-            
             # 1. 生成多组搜索查询
             search_queries = self._generate_search_queries(query)
-            search_queries = [search_queries[0]]
             
             # 2. 执行多组搜索
             all_search_results = []
@@ -811,21 +803,14 @@ class AdvancedWebSearchTool:
                 # 添加延迟以避免API限制
                 time.sleep(1)
                 
-                results = self._google_search(query_text, max_results_per_query)
+                results = self._google_search(query_text)
                 all_search_results.extend(results)
             
             if not all_search_results:
                 return "未找到相关搜索结果。您可以尝试重新表述问题或使用不同的关键词。"
             
-            # 3. 获取网页内容
-            results_with_content = self._fetch_contents_parallel(all_search_results, query)
-            
-            if not results_with_content:
-                links_list = "\n".join([f"- {result['title']}: {result['link']}" for result in all_search_results[:5]])
-                return f"找到了以下搜索结果，但无法获取详细内容：\n{links_list}\n\n您可以直接访问这些链接查看内容。"
-            
-            # 4. 分析内容并生成答案
-            final_answer = self._analyze_content(query, results_with_content)
+            # 3. 直接使用阿里云返回的内容进行分析
+            final_answer = self._analyze_content(query, all_search_results)
             
             print("搜索和分析完成")
             return final_answer
