@@ -1,42 +1,19 @@
 """高级网页搜索工具
 
-此工具实现高级搜索功能，包括：
+此工具实现阿里云联网搜索功能，包括：
 1. 查询改写与多组检索词生成
-2. 分步骤搜索
-3. 对搜索结果进行RAG处理
-4. 结果汇总与优化
+2. 阿里云搜索API调用
+3. 结果汇总与优化
 """
 
 import os
 import time
 import json
-import requests
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, List
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
-from langchain_community.chat_models import ChatZhipuAI, ChatTongyi
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse, quote_plus
-import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import io
-import PyPDF2  # 使用PyPDF2替代PyMuPDF
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
-import spacy
-from spacy.language import Language
-from spacy.tokens import Doc
+from langchain_community.chat_models import ChatTongyi
 import langdetect
-from rank_bm25 import BM25Okapi
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
-
-# 导入LangChain的文档加载器
-from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
-from langchain_community.document_loaders import BSHTMLLoader
-from langchain_text_splitters import HTMLSemanticPreservingSplitter
-from langchain_core.documents import Document
 
 # API配置
 from alibabacloud_tea_openapi.models import Config
@@ -48,16 +25,30 @@ ALIYUN_API_KEY = 'OS-69n85n4c6v27922e'
 ALIYUN_ENDPOINT = 'default-0jqr.platform-cn-shanghai.opensearch.aliyuncs.com'
 ALIYUN_WORKSPACE = 'default'
 ALIYUN_SERVICE_ID = 'ops-web-search-001'
-CSE_API_KEY = 'AIzaSyDFYC1uxFUkjjxQg-DjMmECJCTu2JsE85I'
-CSE_ENGINE_ID = '45f253b7863e94f3f'
 
-# 默认新闻来源
-DEFAULT_NEWS_SOURCES = [
-    "accaglobal.com/hk",       # ACCA官网
-    "hkicpa.org.hk",                    # HKICPA官网
-    "ird.gov.hk/eng",       # 香港税务局官网
-    "chinatax.gov.cn/chinatax/"  # 国家税务总局官网
-]
+# 默认搜索网站列表
+DEFAULT_SEARCH_SITES = {
+    "ACCA": {
+        "domain": "accaglobal.com/hk",
+        "description": "ACCA考试程序性通知与会员资格、会费等事项。仅英文",
+        "languages": ["en"]
+    },
+    "HKICPA": {
+        "domain": "hkicpa.org.hk",
+        "description": "HKICPA考试程序性通知与会员资格、会费等事项。三语",
+        "languages": ["en", "zh-cn", "zh-hk"]
+    },
+    "IRD": {
+        "domain": "ird.gov.hk/eng",
+        "description": "香港的税收政策法规新闻/行政机构介绍等。三语",
+        "languages": ["en", "zh-cn", "zh-hk"]
+    },
+    "CHINATAX": {
+        "domain": "chinatax.gov.cn/chinatax",
+        "description": "和中国大陆税收相关的新闻/行政机构介绍等。",
+        "languages": ["zh-cn"]
+    }
+}
 
 # 输入模型
 class AdvancedWebSearchInput(BaseModel):
@@ -74,654 +65,8 @@ class AdvancedWebSearchTool:
         
         # 初始化结果缓存
         self.result_cache = {}
-        self.content_cache = {}
-        
-        # 初始化向量存储 - 使用主流的多语言嵌入模型
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name="intfloat/multilingual-e5-large"  # 广泛使用的多语言嵌入模型，MTEB排行榜第一
-        )
-        
-        # 初始化spacy模型缓存
-        self.nlp_models = {}
-        
-        # HTML处理配置
-        self.html_headers_to_split_on = [
-            ("h1", "Header 1"),
-            ("h2", "Header 2"),
-            ("h3", "Header 3"),
-            ("h4", "Header 4"),
-        ]
-        
-        # 初始化HTML分割器
-        self.html_splitter = HTMLSemanticPreservingSplitter(
-            headers_to_split_on=self.html_headers_to_split_on,
-            max_chunk_size=1000,
-            separators=["\n\n", "\n", ". ", " ", ""],
-            elements_to_preserve=["table", "ul", "ol", "code"]
-        )
-        
-        # 初始化文本分割器
-        self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=100,
-            length_function=len,
-            separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", " ", ""]
-        )
-        
-        # 设置默认新闻来源
-        self.default_news_sources = DEFAULT_NEWS_SOURCES
 
-    def _get_nlp_model(self, lang: str) -> Language:
-        """获取对应语言的spacy模型
-        
-        Args:
-            lang: 语言代码 (en/zh-cn/zh-hk)
-            
-        Returns:
-            spacy语言模型
-        """
-        if lang not in self.nlp_models:
-            try:
-                # 根据语言加载对应的模型
-                if lang in ['zh-cn', 'zh-hk']:
-                    # 对于中文（简体和香港繁体），使用中文模型
-                    self.nlp_models[lang] = spacy.load("zh_core_web_sm")
-                elif lang == 'en':
-                    # 英文模型
-                    self.nlp_models[lang] = spacy.load("en_core_web_sm")
-                else:
-                    # 默认使用英文模型
-                    self.nlp_models[lang] = spacy.load("en_core_web_sm")
-            except OSError:
-                # 如果模型未安装，下载并安装
-                if lang in ['zh-cn', 'zh-hk']:
-                    spacy.cli.download("zh_core_web_sm")
-                    self.nlp_models[lang] = spacy.load("zh_core_web_sm")
-                else:
-                    spacy.cli.download("en_core_web_sm")
-                    self.nlp_models[lang] = spacy.load("en_core_web_sm")
-                
-        return self.nlp_models[lang]
-
-    def _detect_language(self, text: str) -> str:
-        """检测文本语言
-        
-        Args:
-            text: 输入文本
-            
-        Returns:
-            语言代码 (en/zh-cn/zh-hk)
-        """
-        try:
-            lang = langdetect.detect(text)
-            # 针对简体中文、繁体中文（香港）和英文进行优化
-            lang_map = {
-                'zh-cn': 'zh-cn',  # 简体中文
-                'zh-tw': 'zh-hk',  # 台湾繁体中文映射到香港繁体中文
-                'zh-hk': 'zh-hk',  # 香港繁体中文
-                'zh': 'zh-cn',     # 未指定的中文默认为简体
-                'en': 'en'         # 英文
-            }
-            return lang_map.get(lang, 'en')  # 默认返回英语
-        except:
-            return 'en'  # 检测失败时默认使用英语
-
-    def _extract_keywords_spacy(self, text: str) -> List[str]:
-        """使用spacy提取关键词，优化支持简体中文、繁体中文（香港）和英文
-        
-        Args:
-            text: 输入文本
-            
-        Returns:
-            关键词列表
-        """
-        # 检测语言
-        lang = self._detect_language(text)
-        
-        # 获取对应的spacy模型
-        nlp = self._get_nlp_model(lang)
-        
-        # 针对文本长度进行安全处理
-        if len(text) > 100000:
-            text = text[:100000]  # 避免处理过长文本
-        
-        # 处理文本
-        doc = nlp(text)
-        
-        keywords = set()
-        
-        # 提取名词短语
-        for chunk in doc.noun_chunks:
-            if len(chunk.text.strip()) > 1:  # 过滤单字符
-                keywords.add(chunk.text.strip().lower())
-        
-        # 提取命名实体
-        for ent in doc.ents:
-            if len(ent.text.strip()) > 1:
-                keywords.add(ent.text.strip().lower())
-        
-        # 针对不同语言使用不同的提取策略
-        if lang == 'en':
-            # 英文：提取名词、动词、形容词
-            for token in doc:
-                if token.pos_ in ['NOUN', 'VERB', 'ADJ'] and not token.is_stop and len(token.text.strip()) > 1:
-                    keywords.add(token.text.strip().lower())
-        else:
-            # 中文（简体和繁体）：保留所有非停用词的名词、动词、形容词和副词
-            for token in doc:
-                if token.pos_ in ['NOUN', 'VERB', 'ADJ', 'ADV'] and not token.is_stop and len(token.text.strip()) > 0:
-                    keywords.add(token.text.strip().lower())
-        
-        return list(keywords)
-
-    def _keyword_similarity(self, text1: str, text2: str) -> float:
-        """计算两段文本的关键词相似度
-        
-        Args:
-            text1: 第一段文本
-            text2: 第二段文本
-            
-        Returns:
-            相似度分数 (0-1)
-        """
-        # 使用spacy提取关键词
-        keywords1 = set(self._extract_keywords_spacy(text1))
-        keywords2 = set(self._extract_keywords_spacy(text2))
-        
-        if not keywords1 or not keywords2:
-            return 0.0
-            
-        # 计算Jaccard相似度
-        intersection = len(keywords1.intersection(keywords2))
-        union = len(keywords1.union(keywords2))
-        
-        return intersection / union if union > 0 else 0.0
-
-    def _preprocess_query_for_language(self, query: str, lang: str) -> str:
-        """针对不同语言对查询进行预处理
-        
-        Args:
-            query: 原始查询
-            lang: 语言代码
-            
-        Returns:
-            预处理后的查询
-        """
-        processed_query = query
-        if lang == 'en':
-            processed_query = query.lower()
-        return processed_query
-
-    def _generate_search_queries(self, original_query: str) -> List[Dict]:
-        """生成搜索查询
-        
-        Args:
-            original_query: 用户原始查询
-            
-        Returns:
-            包含原始查询和生成的查询列表
-        """
-        target_sites = self.default_news_sources
-        
-        # 检测查询语言
-        query_lang = self._detect_language(original_query)
-        
-        # 根据语言选择提示模板
-        if query_lang.startswith('zh'):
-            prompt_text = """
-            请基于以下原始问题生成2组不同的中文搜索查询词，以便获得更全面的搜索结果。
-            
-            原始问题: {0}
-            
-            {1}
-            
-            生成的查询词要求：
-            1. 必须使用中文
-            2. 提取原始问题中的核心概念和关键词
-            3. 使用同义词或相关术语进行扩展
-            4. 针对不同角度生成特定查询
-            5. 简洁明了，去除不必要的词语
-            6. 适合网络搜索引擎使用
-            
-            请以JSON格式返回结果，格式如下:
-            ```json
-            [
-              {{
-                "query": "中文查询词1",
-                "explanation": "此查询词的目的解释"
-              }},
-              {{
-                "query": "中文查询词2",
-                "explanation": "此查询词的目的解释"
-              }}
-            ]
-            ```
-            """
-        else:
-            prompt_text = """
-            Please generate 2 different English search queries based on the original question below to get more comprehensive search results.
-            
-            Original Question: {0}
-            
-            {1}
-            
-            Requirements for generated queries:
-            1. Must be in English
-            2. Extract core concepts and keywords from the original question
-            3. Use synonyms or related terms for expansion
-            4. Generate specific queries from different angles
-            5. Be concise and remove unnecessary words
-            6. Suitable for search engines
-            
-            Please return the result in JSON format as follows:
-            ```json
-            [
-              {{
-                "query": "English query 1",
-                "explanation": "Purpose of this query"
-              }},
-              {{
-                "query": "English query 2",
-                "explanation": "Purpose of this query"
-              }}
-            ]
-            ```
-            """
-        
-        sites_text = f"目标网站: {', '.join(target_sites)}" if query_lang.startswith('zh') else f"Target sites: {', '.join(target_sites)}"
-        prompt = prompt_text.format(original_query, sites_text)
-        
-        print(f"生成{'中文' if query_lang.startswith('zh') else '英文'}搜索查询词...")
-        response = self.llm.invoke(prompt)
-        
-        try:
-            json_match = re.search(r'```json\s*([\s\S]*?)\s*```', response.content)
-            if json_match:
-                json_str = json_match.group(1)
-            else:
-                json_str = re.search(r'\[\s*\{.*\}\s*\]', response.content, re.DOTALL).group(0)
-            
-            search_queries = json.loads(json_str)
-            
-            # 限制只返回2个生成的查询
-            search_queries = search_queries[:2]
-            
-            # 为每个查询添加目标网站
-            for query in search_queries:
-                query["target_sites"] = target_sites
-            
-            # 添加原始查询到查询列表的开头
-            original_query_dict = {
-                "query": original_query,
-                "explanation": "原始查询" if query_lang.startswith('zh') else "Original query",
-                "target_sites": target_sites
-            }
-            search_queries.insert(0, original_query_dict)
-            
-            print(f"生成了 {len(search_queries)} 组搜索查询（包括原始查询）" if query_lang.startswith('zh') else 
-                  f"Generated {len(search_queries)} search queries (including original query)")
-            return search_queries
-            
-        except Exception as e:
-            error_msg = f"解析搜索查询词失败: {str(e)}" if query_lang.startswith('zh') else f"Failed to parse search queries: {str(e)}"
-            print(error_msg)
-            # 回退方案
-            fallback_queries = [
-                {
-                    "query": original_query, 
-                    "explanation": "原始查询" if query_lang.startswith('zh') else "Original query", 
-                    "target_sites": target_sites
-                }
-            ]
-            return fallback_queries
-
-    def _hybrid_retrieval_pdf(self, query: str, documents: List[Document], top_k: int = 3) -> List[Document]:
-        """针对PDF文档的混合检索（余弦相似度 + BM25）
-        
-        Args:
-            query: 搜索查询
-            documents: 文档列表
-            top_k: 返回结果数量
-            
-        Returns:
-            最相关的文档列表
-        """
-        if not documents:
-            return []
-            
-        # 准备文档内容
-        texts = [doc.page_content for doc in documents]
-        
-        # 1. 余弦相似度计算
-        # 获取查询和文档的嵌入向量
-        query_embedding = self.embeddings.embed_query(query)
-        doc_embeddings = self.embeddings.embed_documents(texts)
-        
-        # 计算余弦相似度
-        cosine_scores = cosine_similarity(
-            [query_embedding], 
-            doc_embeddings
-        )[0]
-        
-        # 2. BM25检索
-        # 对文档进行分词
-        tokenized_texts = [text.split() for text in texts]  # 简单分词，可以根据语言改进
-        bm25 = BM25Okapi(tokenized_texts)
-        
-        # 对查询进行分词并计算BM25分数
-        tokenized_query = query.split()
-        bm25_scores = np.array(bm25.get_scores(tokenized_query))
-        
-        # 归一化分数
-        cosine_scores = (cosine_scores - cosine_scores.min()) / (cosine_scores.max() - cosine_scores.min() + 1e-8)
-        bm25_scores = (bm25_scores - bm25_scores.min()) / (bm25_scores.max() - bm25_scores.min() + 1e-8)
-        
-        # 3. 混合排序（简单加权）
-        final_scores = 0.6 * cosine_scores + 0.4 * bm25_scores
-        
-        # 获取top_k文档的索引
-        top_indices = np.argsort(final_scores)[-top_k:][::-1]
-        
-        # 返回排序后的文档
-        return [documents[i] for i in top_indices]
-
-    def _process_pdf_content(self, pdf_content: bytes, query: str) -> List[str]:
-        """处理PDF内容并返回相关片段
-        
-        Args:
-            pdf_content: PDF文件内容
-            query: 搜索查询
-            
-        Returns:
-            相关文本片段列表
-        """
-        try:
-            # 创建唯一的临时文件
-            import uuid
-            import tempfile
-            
-            temp_dir = tempfile.gettempdir()
-            unique_filename = f"pdf_{uuid.uuid4().hex}.pdf"
-            temp_pdf_path = os.path.join(temp_dir, unique_filename)
-            
-            with open(temp_pdf_path, "wb") as f:
-                f.write(pdf_content)
-            
-            # 使用LangChain的PyPDFLoader处理PDF
-            loader = PyPDFLoader(temp_pdf_path)
-            documents = loader.load()
-            
-            # 清理临时文件
-            try:
-                os.remove(temp_pdf_path)
-            except Exception as e:
-                print(f"清理临时PDF文件失败: {str(e)}")
-            
-            # 如果没有文档，返回空列表
-            if not documents:
-                print("PDF中未提取到文本内容")
-                return []
-            
-            # 分割文档
-            split_docs = self.text_splitter.split_documents(documents)
-            
-            # 使用混合检索获取相关文档
-            retrieved_docs = self._hybrid_retrieval_pdf(query, split_docs, top_k=5)
-            
-            # 提取文本内容
-            relevant_chunks = [doc.page_content for doc in retrieved_docs]
-            
-            return relevant_chunks
-            
-        except Exception as e:
-            print(f"处理PDF内容时出错: {str(e)}")
-            return []
-
-    def _process_html_content(self, html_content: str, query: str) -> str:
-        """处理HTML内容并返回文本内容
-        
-        Args:
-            html_content: HTML内容
-            query: 搜索查询
-            
-        Returns:
-            处理后的文本内容
-        """
-        try:
-            # 使用BeautifulSoup处理HTML内容
-            soup = BeautifulSoup(html_content, 'html.parser')
-            
-            # 移除不必要的元素
-            for tag in ['script', 'style', 'nav', 'footer', 'header', 'iframe', 'meta', 'noscript']:
-                for element in soup.find_all(tag):
-                    if element:
-                        element.extract()
-            
-            # 提取文本
-            text = soup.get_text()
-            lines = (line.strip() for line in text.splitlines())
-            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-            text = '\n'.join(chunk for chunk in chunks if chunk)
-            
-            # 限制文本长度以避免上下文过长
-            if len(text) > 50000:
-                text = text[:50000] + "..."
-            
-            if len(text.strip()) < 50:
-                return "内容太少，可能是无效页面"
-            
-            return text
-            
-        except Exception as e:
-            print(f"处理HTML内容时出错: {str(e)}")
-            return f"处理HTML内容时出错: {str(e)}"
-
-    def _fetch_page_content(self, url: str, query: str) -> str:
-        """获取网页内容，包括PDF处理
-        
-        Args:
-            url: 网页URL
-            query: 搜索查询
-            
-        Returns:
-            处理后的内容
-        """
-        # 检查缓存
-        cache_key = f"{url}_{query}"
-        if cache_key in self.content_cache:
-            print(f"使用缓存的页面内容: {url}")
-            return self.content_cache[cache_key]
-        
-        try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-            
-            # 配置代理
-            proxies = {
-                'http': 'http://127.0.0.1:7890',
-                'https': 'http://127.0.0.1:7890'
-            }
-            
-            print(f"获取页面内容: {url}")
-            
-            response = requests.get(url, timeout=15, headers=headers, proxies=proxies)
-            response.raise_for_status()
-            
-            content_type = response.headers.get('Content-Type', '').lower()
-            
-            # 处理PDF文件
-            if 'application/pdf' in content_type:
-                print(f"处理PDF文件: {url}")
-                relevant_chunks = self._process_pdf_content(response.content, query)
-                if relevant_chunks:
-                    content = "\n\n".join(relevant_chunks)
-                    self.content_cache[cache_key] = content
-                    return content
-                return "无法从PDF中提取相关内容"
-            
-            # 处理HTML内容 - 直接处理不使用RAG
-            if 'text/html' in content_type:
-                print(f"处理HTML内容: {url}")
-                content = self._process_html_content(response.text, query)
-                self.content_cache[cache_key] = content
-                return content
-                
-            return f"不支持的内容类型: {content_type}"
-            
-        except Exception as e:
-            print(f"获取页面内容失败 ({url}): {str(e)}")
-            return f"获取页面内容失败: {str(e)}"
-
-    def _fetch_contents_parallel(self, search_results: List[Dict], query: str, max_workers: int = 3) -> List[Dict]:
-        """并行获取多个网页内容
-        
-        Args:
-            search_results: 搜索结果列表
-            query: 搜索查询
-            max_workers: 最大线程数
-            
-        Returns:
-            包含内容的搜索结果列表
-        """
-        unique_links = set()
-        unique_results = []
-        
-        # 去重
-        for result in search_results:
-            if result["link"] not in unique_links:
-                unique_links.add(result["link"])
-                unique_results.append(result)
-        
-        results_with_content = []
-        
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_result = {
-                executor.submit(self._fetch_page_content, result["link"], query): result 
-                for result in unique_results
-            }
-            
-            for future in as_completed(future_to_result):
-                result = future_to_result[future]
-                try:
-                    content = future.result()
-                    if not content.startswith(("获取页面内容失败", "不支持的内容类型", "内容太少")):
-                        result_with_content = result.copy()
-                        result_with_content["content"] = content
-                        results_with_content.append(result_with_content)
-                except Exception as e:
-                    print(f"获取内容出错: {str(e)}")
-        
-        return results_with_content
-
-    def _analyze_content(self, query: str, results_with_content: List[Dict]) -> str:
-        """使用LangChain风格分析内容并生成答案
-        
-        Args:
-            query: 原始查询
-            results_with_content: 包含内容的搜索结果列表
-            
-        Returns:
-            分析结果
-        """
-        if not results_with_content:
-            return "未找到相关内容。" if self._detect_language(query).startswith('zh') else "No relevant content found."
-        
-        # 将结果转换为文档格式
-        documents = []
-        for result in results_with_content:
-            # 提取元数据
-            metadata = {
-                "url": result.get("link", ""),
-                "snippet": result.get("snippet", ""),
-                "query": result.get("query", ""),
-                "content": result.get("content", "")
-            }
-
-            documents.append(metadata)
-            
-            # 创建文档
-            # doc = Document(
-            #     page_content=result.get("content", ""),
-            #     metadata=metadata
-            # )
-            # documents.append(doc)
-        
-        # 使用混合检索获取最相关的文档
-        # relevant_docs = self._hybrid_retrieval_pdf(query, documents, top_k=5)
-        
-        # 构建提示内容
-        context_str = ""
-        for i, doc in enumerate(documents):
-            context_str += f"[Source {i+1}]"
-            context_str += f"URL: {doc['url']}\n"
-            context_str += f"Query: {doc['query']}\n"
-            context_str += f"Summary: {doc['snippet']}\n"
-            context_str += f"Content: {doc['content']}\n\n"
-        
-        # 检测查询语言
-        query_lang = self._detect_language(query)
-        
-        # 根据语言构建提示
-        if query_lang.startswith('zh'):
-            prompt_template = """
-            请根据以下搜索结果，用中文为用户提供一个全面而准确的回答。必须使用中文回答！
-
-            用户查询: {question}
-
-            搜索结果:
-            {context}
-
-            要求:
-            1. 必须使用中文回答
-            2. 直接回答用户的问题
-            3. 综合所有来源中的相关信息
-            4. 引用信息来源，标明信息来自哪个网页，必须包含完整的URL链接
-            5. 每个关键信息点后都应该添加对应的URL引用，格式为 [来源: URL]
-            6. 如果不同来源有冲突信息，请指出这些不一致
-            7. 如果内容中没有足够的信息，请诚实地说明
-            8. 不要生成未在提供的内容中明确提到的信息
-
-            请以专业、清晰的方式组织回答，避免不必要的重复。回答应基于事实，不要过度解释或猜测。每个重要陈述都需要有相应的URL引用支持。
-            """
-        else:
-            prompt_template = """
-            Based on the following search results, provide a comprehensive and accurate answer in English. You MUST answer in English!
-
-            User Query: {question}
-
-            Search Results:
-            {context}
-
-            Requirements:
-            1. MUST answer in English
-            2. Answer the user's question directly
-            3. Integrate relevant information from all sources
-            4. Cite your sources by including the complete URL for each webpage referenced
-            5. Add URL citations after each key point in the format [Source: URL]
-            6. If there are inconsistencies between sources, point them out
-            7. If there is insufficient information, honestly acknowledge it
-            8. Do not generate information not explicitly mentioned in the provided content
-
-            Organize your answer in a professional and clear manner, avoiding unnecessary repetition. The answer should be fact-based without excessive explanation or speculation. Each significant statement should be supported by a URL citation.
-            """
-        
-        # 替换占位符
-        prompt = prompt_template.format(
-            question=query,
-            context=context_str
-        )
-        
-        try:
-            print("生成回答...")
-            response = self.llm.invoke(prompt)
-            return response.content
-        except Exception as e:
-            print(f"回答生成失败: {str(e)}")
-            error_msg = "分析内容时出现错误"
-            return error_msg
-
-    def _google_search(self, query: str) -> List[Dict]:
+    def _aliyun_search(self, query: str) -> List[Dict]:
         """执行阿里云联网搜索
         
         Args:
@@ -739,49 +84,65 @@ class AdvancedWebSearchTool:
         try:
             # 配置阿里云客户端
             config = Config(
-                bearer_token="OS-69n85n4c6v27922e",
-                endpoint="default-0jqr.platform-cn-shanghai.opensearch.aliyuncs.com",
+                bearer_token=ALIYUN_API_KEY,
+                endpoint=ALIYUN_ENDPOINT,
                 protocol="http"
             )
             client = Client(config=config)
             
+            # 构建网站限制条件
+            # site_filter = " OR ".join([f"site:{site['domain']}" for site in DEFAULT_SEARCH_SITES.values()])
+            # filtered_query = f"({query}) AND ({site_filter})"
+            filtered_query = f"{query}"
+            
             # 创建请求
             request = GetWebSearchRequest(
-                query=query,
+                query=filtered_query,
                 way="full",
-                top_k=5
+                top_k=10  # 增加返回结果数量，因为有网站过滤可能会减少有效结果
             )
             
-            print(f"执行阿里云联网搜索: {query}")
+            print(f"执行阿里云联网搜索: {filtered_query}")
             
             # 发送请求
-            response = client.get_web_search("default", "ops-web-search-001", request)
+            response = client.get_web_search(ALIYUN_WORKSPACE, ALIYUN_SERVICE_ID, request)
             search_results = response.body.to_map()
             
             if "result" not in search_results or "search_result" not in search_results["result"]:
                 print("未找到搜索结果")
                 return []
             
+            # 过滤和处理结果
             results = []
             for item in search_results["result"]["search_result"]:
+                url = item.get("link", "").lower()
+                # 添加来源网站信息
+                source_site = next(
+                    (name for name, site in DEFAULT_SEARCH_SITES.items() 
+                        if site["domain"].lower() in url),
+                    "Unknown"
+                )
+                
                 results.append({
+                    "title": item.get("title", ""),
                     "link": item.get("link", ""),
                     "snippet": item.get("snippet", ""),
                     "content": item.get("content", ""),
+                    "source": source_site,
                     "query": query
                 })
             
             # 保存到缓存
             self.result_cache[cache_key] = results
             
-            print(f"找到 {len(results)} 个搜索结果")
+            print(f"找到 {len(results)} 个来自指定网站的搜索结果")
             return results
         except Exception as e:
             print(f"搜索失败: {str(e)}")
             return []
 
     def search(self, query: str) -> str:
-        """执行高级搜索
+        """执行搜索
         
         Args:
             query: 用户原始查询
@@ -792,28 +153,81 @@ class AdvancedWebSearchTool:
         try:
             print(f"处理查询: {query}")
             
-            # 1. 生成多组搜索查询
-            search_queries = self._generate_search_queries(query)
+            # 执行搜索
+            results = self._aliyun_search(query)
             
-            # 2. 执行多组搜索
-            all_search_results = []
-            for search_query in search_queries:
-                query_text = search_query["query"]
-                
-                # 添加延迟以避免API限制
-                time.sleep(1)
-                
-                results = self._google_search(query_text)
-                all_search_results.extend(results)
-            
-            if not all_search_results:
+            if not results:
                 return "未找到相关搜索结果。您可以尝试重新表述问题或使用不同的关键词。"
             
-            # 3. 直接使用阿里云返回的内容进行分析
-            final_answer = self._analyze_content(query, all_search_results)
+            # 构建提示内容
+            context_str = ""
+            for i, result in enumerate(results):
+                context_str += f"[Source {i+1}]\n"
+                context_str += f"URL: {result.get('link', '')}\n"
+                context_str += f"Title: {result.get('title', '')}\n"
+                context_str += f"Summary: {result.get('snippet', '')}\n"
+                context_str += f"Content: {result.get('content', '')}\n\n"
             
-            print("搜索和分析完成")
-            return final_answer
+            # 检测查询语言
+            is_chinese = langdetect.detect(query).startswith('zh')
+            
+            # 根据语言构建提示
+            if is_chinese:
+                prompt_template = """
+                请根据以下搜索结果，用中文为用户提供一个全面而准确的回答。必须使用中文回答！
+
+                用户查询: {question}
+
+                搜索结果:
+                {context}
+
+                要求:
+                1. 必须使用中文回答
+                2. 直接回答用户的问题
+                3. 综合所有来源中的相关信息
+                4. 引用信息来源，标明信息来自哪个网页，必须包含完整的URL链接
+                5. 每个关键信息点后都应该添加对应的URL引用，格式为 [来源: URL]
+                6. 如果不同来源有冲突信息，请指出这些不一致
+                7. 如果内容中没有足够的信息，请诚实地说明
+                8. 不要生成未在提供的内容中明确提到的信息
+
+                请以专业、清晰的方式组织回答，避免不必要的重复。回答应基于事实，不要过度解释或猜测。每个重要陈述都需要有相应的URL引用支持。
+                """
+            else:
+                prompt_template = """
+                Based on the following search results, provide a comprehensive and accurate answer in English. You MUST answer in English!
+
+                User Query: {question}
+
+                Search Results:
+                {context}
+
+                Requirements:
+                1. MUST answer in English
+                2. Answer the user's question directly
+                3. Integrate relevant information from all sources
+                4. Cite your sources by including the complete URL for each webpage referenced
+                5. Add URL citations after each key point in the format [Source: URL]
+                6. If there are inconsistencies between sources, point them out
+                7. If there is insufficient information, honestly acknowledge it
+                8. Do not generate information not explicitly mentioned in the provided content
+
+                Organize your answer in a professional and clear manner, avoiding unnecessary repetition. The answer should be fact-based without excessive explanation or speculation. Each significant statement should be supported by a URL citation.
+                """
+            
+            # 替换占位符
+            prompt = prompt_template.format(
+                question=query,
+                context=context_str
+            )
+            
+            try:
+                print("生成回答...")
+                response = self.llm.invoke(prompt)
+                return response.content
+            except Exception as e:
+                print(f"回答生成失败: {str(e)}")
+                return "分析内容时出现错误"
             
         except Exception as e:
             print(f"搜索过程中发生未预期的错误: {str(e)}")
@@ -828,6 +242,6 @@ advanced_web_search_instance = AdvancedWebSearchTool()
 advanced_web_search_tool = StructuredTool.from_function(
     func=advanced_web_search_instance.search,
     name="advanced_web_search",
-    description="使用高级技术在互联网上搜索信息，包括查询改写、多组检索词生成和内容分析。回答的结果是最终版，不要再尝试重复查询类似问题",
+    description="使用阿里云联网搜索API搜索信息并生成答案。回答的结果是最终版，不要再尝试重复查询类似问题",
     args_schema=AdvancedWebSearchInput
 ) 
