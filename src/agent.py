@@ -43,15 +43,15 @@ check_environment()
 
 class TaxAgent:
     def __init__(self):
-        self.llm = ChatTongyi(
-            model="qwen-long",
-            api_key=os.getenv("DASHSCOPE_API_KEY")
-        )
-        # self.llm = ChatZhipuAI(
-        #     model="glm-4-flash",
-        #     temperature=0.5,
-        #     zhipuai_api_key=os.getenv("ZHIPUAI_API_KEY")
+        # self.llm = ChatTongyi(
+        #     model="qwen-long",
+        #     api_key=os.getenv("DASHSCOPE_API_KEY")
         # )
+        self.llm = ChatZhipuAI(
+            model="glm-4-flash",
+            temperature=0.5,
+            zhipuai_api_key=os.getenv("ZHIPUAI_API_KEY")
+        )
 
         self.tools = [
             calculate,
@@ -83,8 +83,31 @@ class TaxAgent:
 4. 确保引用的信息来源可靠且最新
 5. 如果实在检索不到相关的信息，也可以通过你自己已有的知识回答，但是要明确说明没有检索到相关信息"""
 
+        final_system_prompt = """你是一个专业的税务顾问助手。
+现在你需要基于之前的工具调用结果，提供最终的专业回答。
+不要再尝试调用任何工具，直接给出最终答案。
+
+语言要求：
+- 如果用户使用中文提问，请使用中文回答
+- 如果用户使用英文提问，请使用英文回答
+- 保持回答语言与提问语言一致
+
+回答格式要求：
+1. 保持专业和友好的语气
+2. 问题要叙述清晰
+3. 每个关键信息点后都应该添加对应的URL引用
+   - 中文回答格式：[来源: URL]
+   - 英文回答格式：[Source: URL]
+4. 确保引用的信息来源可靠且最新
+5. 如果实在检索不到相关的信息，也可以通过你自己已有的知识回答，但是要明确说明没有检索到相关信息"""
+
         prompt = ChatPromptTemplate.from_messages([
             ("system", system_prompt),
+            MessagesPlaceholder(variable_name="messages"),
+        ])
+
+        final_prompt = ChatPromptTemplate.from_messages([
+            ("system", final_system_prompt),
             MessagesPlaceholder(variable_name="messages"),
         ])
 
@@ -97,6 +120,13 @@ class TaxAgent:
             prompt=system_prompt
         )
 
+        # 创建不会调用工具的final_agent
+        self.final_agent = create_react_agent(
+            model=self.llm,  # 不绑定工具
+            tools=[],  # 空工具列表
+            prompt=final_system_prompt
+        )
+
         self.memory = MemorySaver()
         self.workflow = self._create_graph()
 
@@ -104,17 +134,24 @@ class TaxAgent:
         builder = StateGraph(MessagesState)
         builder.add_node("agent", self.agent)
         builder.add_node("tools", self.tool_node)
+        # 添加不会调用工具的final_agent节点
+        builder.add_node("final_agent", self.final_agent)
 
         builder.set_entry_point("agent")
+        # 第一个agent可以调用工具
         builder.add_conditional_edges(
             "agent",
             tools_condition,
             {
                 "tools": "tools",
-                "__end__": END,
+                "__end__": END,  # 如果第一个agent不需要调用工具，直接结束
             }
         )
-        builder.add_edge("tools", "agent")
+        # 工具执行后一定进入final_agent
+        builder.add_edge("tools", "final_agent")
+        # final_agent执行后直接结束，不再调用工具
+        builder.add_edge("final_agent", END)
+        
         return builder.compile(checkpointer=self.memory)
 
     def query(self, question: str, thread_id: Optional[str] = None) -> List[str]:
@@ -127,8 +164,12 @@ class TaxAgent:
         }
         result = []
         for step in self.workflow.stream({"messages": messages}, config=config, stream_mode="updates"):
-            if "messages" in step['agent']:
+            if "agent" in step and "messages" in step['agent']:
                 last_msg = step['agent']['messages'][-1]
+                if isinstance(last_msg, AIMessage) and last_msg.content:
+                    result.append(last_msg.content)
+            elif "final_agent" in step and "messages" in step['final_agent']:
+                last_msg = step['final_agent']['messages'][-1]
                 if isinstance(last_msg, AIMessage) and last_msg.content:
                     result.append(last_msg.content)
         return result

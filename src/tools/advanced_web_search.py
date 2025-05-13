@@ -828,6 +828,6 @@ advanced_web_search_instance = AdvancedWebSearchTool()
 advanced_web_search_tool = StructuredTool.from_function(
     func=advanced_web_search_instance.search,
     name="advanced_web_search",
-    description="使用高级技术在互联网上搜索信息，包括查询改写、多组检索词生成和内容分析",
+    description="使用高级技术在互联网上搜索信息，包括查询改写、多组检索词生成和内容分析。回答的结果是最终版，不要再尝试重复查询类似问题",
     args_schema=AdvancedWebSearchInput
 ) 
