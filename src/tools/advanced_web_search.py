@@ -11,6 +11,9 @@ import os
 import time
 import json
 import requests
+import logging
+import datetime
+from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
@@ -38,6 +41,32 @@ from langchain_community.document_loaders import BSHTMLLoader
 from langchain_text_splitters import HTMLSemanticPreservingSplitter
 from langchain_core.documents import Document
 
+# 配置日志
+def setup_logging():
+    """配置日志系统"""
+    # 创建logs目录（如果不存在）
+    logs_dir = Path("logs")
+    logs_dir.mkdir(exist_ok=True)
+    
+    # 生成日志文件名，包含日期
+    current_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    log_file = logs_dir / f"search_log_{current_date}.log"
+    
+    # 配置日志格式
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()  # 同时输出到控制台
+        ]
+    )
+    
+    return logging.getLogger("advanced_web_search")
+
+# 初始化日志记录器
+logger = setup_logging()
+
 # Bing API配置
 BING_API_KEY = '你的Bing API密钥'
 BING_CUSTOM_CONFIG_ID = '你的Bing自定义配置ID'
@@ -54,7 +83,6 @@ DEFAULT_NEWS_SOURCES = [
 class AdvancedWebSearchInput(BaseModel):
     """高级网络搜索查询输入"""
     query: str = Field(..., description="用户的原始问题")
-    max_results_per_query: int = Field(3, description="每个检索词返回的最大结果数")
 
 class AdvancedWebSearchTool:
     def __init__(self):
@@ -483,29 +511,36 @@ class AdvancedWebSearchTool:
             # 使用BeautifulSoup处理HTML内容
             soup = BeautifulSoup(html_content, 'html.parser')
             
-            # 移除不必要的元素
-            for tag in ['script', 'style', 'nav', 'footer', 'header', 'iframe', 'meta', 'noscript']:
+            # 只移除明确不包含有用内容的元素
+            for tag in ['script', 'style', 'footer', 'header', 'nav']:
                 for element in soup.find_all(tag):
                     if element:
                         element.extract()
             
-            # 提取文本
-            text = soup.get_text()
-            lines = (line.strip() for line in text.splitlines())
-            chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-            text = '\n'.join(chunk for chunk in chunks if chunk)
+            # 提取文本，保留更多的结构信息
+            text = soup.get_text(separator='\n')
             
-            # 限制文本长度以避免上下文过长
-            if len(text) > 50000:
-                text = text[:50000] + "..."
+            # 清理文本（去除多余的空行但保留基本结构）
+            lines = []
+            for line in text.splitlines():
+                line = line.strip()
+                if line:  # 只过滤完全空的行
+                    lines.append(line)
             
-            if len(text.strip()) < 50:
+            text = '\n'.join(lines)
+            
+            # 限制文本长度以避免上下文过长，但提高上限
+            if len(text) > 100000:
+                logger.warning(f"HTML内容过长 ({len(text)} 字符)，截断为 100000 字符")
+                text = text[:100000] + "..."
+            
+            if len(text.strip()) < 20:  # 降低无效页面的判断阈值
                 return "内容太少，可能是无效页面"
             
             return text
             
         except Exception as e:
-            print(f"处理HTML内容时出错: {str(e)}")
+            logger.error(f"处理HTML内容时出错: {str(e)}", exc_info=True)
             return f"处理HTML内容时出错: {str(e)}"
 
     def _fetch_page_content(self, url: str, query: str) -> str:
@@ -518,10 +553,13 @@ class AdvancedWebSearchTool:
         Returns:
             处理后的内容
         """
+        # 记录开始获取内容
+        logger.info(f"开始获取页面内容: {url}")
+        
         # 检查缓存
         cache_key = f"{url}_{query}"
         if cache_key in self.content_cache:
-            print(f"使用缓存的页面内容: {url}")
+            logger.info(f"使用缓存的页面内容: {url}")
             return self.content_cache[cache_key]
         
         try:
@@ -535,34 +573,47 @@ class AdvancedWebSearchTool:
                 'https': 'http://127.0.0.1:7890'
             }
             
-            print(f"获取页面内容: {url}")
+            logger.info(f"发送HTTP请求: {url}")
             
             response = requests.get(url, timeout=15, headers=headers, proxies=proxies)
             response.raise_for_status()
             
             content_type = response.headers.get('Content-Type', '').lower()
+            logger.info(f"页面内容类型: {content_type}")
             
             # 处理PDF文件
             if 'application/pdf' in content_type:
-                print(f"处理PDF文件: {url}")
+                logger.info(f"处理PDF文件: {url}")
                 relevant_chunks = self._process_pdf_content(response.content, query)
                 if relevant_chunks:
                     content = "\n\n".join(relevant_chunks)
+                    # 记录提取的内容长度
+                    logger.info(f"从PDF提取了 {len(relevant_chunks)} 个相关片段，总长度: {len(content)} 字符")
+                    # 记录内容摘要
+                    content_summary = content[:200] + "..." if len(content) > 200 else content
+                    logger.debug(f"PDF内容摘要: {content_summary}")
                     self.content_cache[cache_key] = content
                     return content
+                logger.warning(f"无法从PDF中提取相关内容: {url}")
                 return "无法从PDF中提取相关内容"
             
             # 处理HTML内容 - 直接处理不使用RAG
             if 'text/html' in content_type:
-                print(f"处理HTML内容: {url}")
+                logger.info(f"处理HTML内容: {url}")
                 content = self._process_html_content(response.text, query)
+                # 记录提取的内容长度
+                logger.info(f"从HTML提取了内容，长度: {len(content)} 字符")
+                # 记录内容摘要
+                content_summary = content[:200] + "..." if len(content) > 200 else content
+                logger.debug(f"HTML内容摘要: {content_summary}")
                 self.content_cache[cache_key] = content
                 return content
-                
+            
+            logger.warning(f"不支持的内容类型: {content_type}")
             return f"不支持的内容类型: {content_type}"
             
         except Exception as e:
-            print(f"获取页面内容失败 ({url}): {str(e)}")
+            logger.error(f"获取页面内容失败 ({url}): {str(e)}", exc_info=True)
             return f"获取页面内容失败: {str(e)}"
 
     def _fetch_contents_parallel(self, search_results: List[Dict], query: str, max_workers: int = 3) -> List[Dict]:
@@ -585,6 +636,8 @@ class AdvancedWebSearchTool:
                 unique_links.add(result["link"])
                 unique_results.append(result)
         
+        logger.info(f"开始并行获取 {len(unique_results)} 个唯一网页内容 (去重后)")
+        
         results_with_content = []
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -601,9 +654,13 @@ class AdvancedWebSearchTool:
                         result_with_content = result.copy()
                         result_with_content["content"] = content
                         results_with_content.append(result_with_content)
+                        logger.info(f"成功获取内容: {result['link']}")
+                    else:
+                        logger.warning(f"获取内容失败: {result['link']} - {content[:100]}")
                 except Exception as e:
-                    print(f"获取内容出错: {str(e)}")
+                    logger.error(f"获取内容出错: {result['link']} - {str(e)}", exc_info=True)
         
+        logger.info(f"并行获取完成，成功获取 {len(results_with_content)}/{len(unique_results)} 个网页内容")
         return results_with_content
 
     def _analyze_content(self, query: str, results_with_content: List[Dict]) -> str:
@@ -617,7 +674,10 @@ class AdvancedWebSearchTool:
             分析结果
         """
         if not results_with_content:
+            logger.warning("没有可分析的内容")
             return "未找到相关内容。" if self._detect_language(query).startswith('zh') else "No relevant content found."
+        
+        logger.info(f"开始分析 {len(results_with_content)} 个网页内容")
         
         # 将结果转换为文档格式
         documents = []
@@ -638,7 +698,9 @@ class AdvancedWebSearchTool:
             documents.append(doc)
         
         # 使用混合检索获取最相关的文档
+        logger.info("使用混合检索获取最相关的文档")
         relevant_docs = self._hybrid_retrieval_pdf(query, documents, top_k=5)
+        logger.info(f"选择了 {len(relevant_docs)} 个最相关的文档进行分析")
         
         # 构建提示内容
         context_str = ""
@@ -649,9 +711,12 @@ class AdvancedWebSearchTool:
             context_str += f"Query: {doc.metadata['query']}\n"
             context_str += f"Summary: {doc.metadata['snippet']}\n"
             context_str += f"Content: {doc.page_content}...\n\n"
+            
+            logger.info(f"文档 {i+1}: {doc.metadata['title']} - {doc.metadata['url']}")
         
         # 检测查询语言
         query_lang = self._detect_language(query)
+        logger.info(f"检测到查询语言: {query_lang}")
         
         # 根据语言构建提示
         if query_lang.startswith('zh'):
@@ -703,12 +768,15 @@ class AdvancedWebSearchTool:
             context=context_str
         )
         
+        logger.info("生成提示完成，开始调用LLM生成回答")
+        
         try:
-            print("生成回答...")
+            logger.info("调用LLM生成回答")
             response = self.llm.invoke(prompt)
+            logger.info("LLM回答生成成功")
             return response.content
         except Exception as e:
-            print(f"回答生成失败: {str(e)}")
+            logger.error(f"回答生成失败: {str(e)}", exc_info=True)
             error_msg = "分析内容时出现错误，以下是找到的信息摘要：\n\n" if query_lang.startswith('zh') else "Error occurred during analysis. Here is a summary of the information found:\n\n"
             for i, doc in enumerate(relevant_docs[:3]):
                 error_msg += f"- {doc.metadata['title']}\n"
@@ -716,113 +784,114 @@ class AdvancedWebSearchTool:
                 error_msg += f"  Summary: {doc.metadata['snippet']}\n\n"
             return error_msg
 
-    def _bing_search(self, query: str, num: int = 5) -> List[Dict]:
-        """执行Bing搜索
+    def _bing_search(self, query: str) -> List[Dict]:
+        """执行搜索
         
         Args:
             query: 查询词
-            num: 返回结果数量
             
         Returns:
             搜索结果列表
         """
+        # 记录搜索查询
+        logger.info(f"搜索查询: {query}")
+        
         # 检查缓存
-        cache_key = f"{query}_{num}"
+        cache_key = f"{query}"
         if cache_key in self.result_cache:
-            print(f"使用缓存的搜索结果: {query}")
+            logger.info(f"使用缓存的搜索结果: {query}")
             return self.result_cache[cache_key]
         
-        url = "https://api.cognitive.microsoft.com/bing/v7.0/search"
-        headers = {
-            "Ocp-Apim-Subscription-Key": BING_API_KEY
-        }
+        # 使用新的API端点
+        url = f"http://8.216.81.217:8000/search"
         params = {
-            "q": query,
-            "customconfig": BING_CUSTOM_CONFIG_ID,
-            "count": num
+            "keyword": query
         }
         
-        print(f"执行Bing搜索: {query}")
+        logger.info(f"执行搜索请求: {url}?keyword={quote_plus(query)}")
         
         try:
-            response = requests.get(url, headers=headers, params=params)
+            response = requests.get(url, params=params)
             response.raise_for_status()
-            search_results = response.json()
+            search_data = response.json()
             
-            if "webPages" not in search_results:
-                print("未找到搜索结果")
+            # 记录API响应
+            logger.debug(f"搜索API响应: {json.dumps(search_data, ensure_ascii=False)}")
+            
+            if "results" not in search_data or not search_data["results"]:
+                logger.warning("未找到搜索结果")
                 return []
                 
             results = []
-            for item in search_results.get("webPages", {}).get("value", []):
+            for item in search_data.get("results", []):
                 results.append({
-                    "title": item.get("name", ""),
+                    "title": item.get("title", ""),
                     "link": item.get("url", ""),
-                    "snippet": item.get("snippet", ""),
+                    "snippet": item.get("abstract", ""),
                     "query": query
                 })
             
             # 保存到缓存
             self.result_cache[cache_key] = results
             
-            print(f"找到 {len(results)} 个搜索结果")
+            logger.info(f"找到 {len(results)} 个搜索结果")
+            
+            # 记录搜索结果的URL
+            for i, result in enumerate(results):
+                logger.info(f"结果 {i+1}: {result['title']} - {result['link']}")
+                
             return results
         except Exception as e:
-            print(f"搜索失败: {str(e)}")
+            logger.error(f"搜索失败: {str(e)}", exc_info=True)
             return []
 
-    def search(self, query: str, max_results_per_query: int = 5) -> str:
+    def search(self, query: str) -> str:
         """执行高级搜索
         
         Args:
             query: 用户原始查询
-            max_results_per_query: 每个检索词返回的最大结果数
             
         Returns:
             搜索结果分析
         """
         try:
-            print(f"处理查询: {query}")
+            # 记录搜索开始
+            logger.info(f"===== 开始新的搜索任务 =====")
+            logger.info(f"用户查询: {query}")
             
-            # 直接使用默认新闻来源
-            target_sites = self.default_news_sources
-            print(f"目标网站: {', '.join(target_sites)}")
+            # 1. 直接使用原始查询执行搜索
+            search_results = self._bing_search(query)
             
-            # 1. 生成多组搜索查询
-            search_queries = self._generate_search_queries(query)
-            search_queries = [search_queries[0]]
-            
-            # 2. 执行多组搜索
-            all_search_results = []
-            for search_query in search_queries:
-                query_text = search_query["query"]
-                
-                # 添加延迟以避免API限制
-                time.sleep(1)
-                
-                results = self._bing_search(query_text, max_results_per_query)
-                all_search_results.extend(results)
-            
-            if not all_search_results:
+            if not search_results:
+                logger.warning(f"未找到相关搜索结果: {query}")
                 return "未找到相关搜索结果。您可以尝试重新表述问题或使用不同的关键词。"
             
-            # 3. 获取网页内容
-            results_with_content = self._fetch_contents_parallel(all_search_results, query)
+            # 2. 获取网页内容
+            logger.info(f"开始获取 {len(search_results)} 个网页的内容")
+            results_with_content = self._fetch_contents_parallel(search_results, query)
             
             if not results_with_content:
-                links_list = "\n".join([f"- {result['title']}: {result['link']}" for result in all_search_results[:5]])
+                logger.warning("未能获取任何网页的内容")
+                links_list = "\n".join([f"- {result['title']}: {result['link']}" for result in search_results[:5]])
                 return f"找到了以下搜索结果，但无法获取详细内容：\n{links_list}\n\n您可以直接访问这些链接查看内容。"
             
-            # 4. 分析内容并生成答案
+            logger.info(f"成功获取了 {len(results_with_content)} 个网页的内容")
+            
+            # 3. 分析内容并生成答案
+            logger.info("开始分析内容并生成回答")
             final_answer = self._analyze_content(query, results_with_content)
             
-            print("搜索和分析完成")
+            # 记录生成的回答
+            answer_summary = final_answer[:200] + "..." if len(final_answer) > 200 else final_answer
+            logger.info(f"生成的回答摘要: {answer_summary}")
+            
+            logger.info("===== 搜索任务完成 =====")
             return final_answer
             
         except Exception as e:
-            print(f"搜索过程中发生未预期的错误: {str(e)}")
+            logger.error(f"搜索过程中发生未预期的错误: {str(e)}", exc_info=True)
             import traceback
-            traceback.print_exc()
+            logger.error(traceback.format_exc())
             return f"搜索过程中发生错误: {str(e)}"
 
 # 创建工具实例
