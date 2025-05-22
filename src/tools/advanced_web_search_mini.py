@@ -23,22 +23,16 @@ from urllib.parse import urlparse, quote_plus
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import io
-import PyPDF2  # 使用PyPDF2替代PyMuPDF
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
+import PyPDF2 
 import spacy
 from spacy.language import Language
 from spacy.tokens import Doc
 import langdetect
-from rank_bm25 import BM25Okapi
-from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 
 # 导入LangChain的文档加载器
 from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
 from langchain_community.document_loaders import BSHTMLLoader
-from langchain_text_splitters import HTMLSemanticPreservingSplitter
 from langchain_core.documents import Document
 
 # 配置日志
@@ -67,10 +61,6 @@ def setup_logging():
 # 初始化日志记录器
 logger = setup_logging()
 
-# Bing API配置
-BING_API_KEY = '你的Bing API密钥'
-BING_CUSTOM_CONFIG_ID = '你的Bing自定义配置ID'
-
 # 默认新闻来源
 DEFAULT_NEWS_SOURCES = [
     "accaglobal.com/hk",       # ACCA官网
@@ -96,72 +86,11 @@ class AdvancedWebSearchTool:
         self.result_cache = {}
         self.content_cache = {}
         
-        # 初始化向量存储 - 使用主流的多语言嵌入模型
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name="intfloat/multilingual-e5-large"  # 广泛使用的多语言嵌入模型，MTEB排行榜第一
-        )
-        
         # 初始化spacy模型缓存
         self.nlp_models = {}
         
-        # HTML处理配置
-        self.html_headers_to_split_on = [
-            ("h1", "Header 1"),
-            ("h2", "Header 2"),
-            ("h3", "Header 3"),
-            ("h4", "Header 4"),
-        ]
-        
-        # 初始化HTML分割器
-        self.html_splitter = HTMLSemanticPreservingSplitter(
-            headers_to_split_on=self.html_headers_to_split_on,
-            max_chunk_size=1000,
-            separators=["\n\n", "\n", ". ", " ", ""],
-            elements_to_preserve=["table", "ul", "ol", "code"]
-        )
-        
-        # 初始化文本分割器
-        self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=100,
-            length_function=len,
-            separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", " ", ""]
-        )
-        
         # 设置默认新闻来源
         self.default_news_sources = DEFAULT_NEWS_SOURCES
-
-    def _get_nlp_model(self, lang: str) -> Language:
-        """获取对应语言的spacy模型
-        
-        Args:
-            lang: 语言代码 (en/zh-cn/zh-hk)
-            
-        Returns:
-            spacy语言模型
-        """
-        if lang not in self.nlp_models:
-            try:
-                # 根据语言加载对应的模型
-                if lang in ['zh-cn', 'zh-hk']:
-                    # 对于中文（简体和香港繁体），使用中文模型
-                    self.nlp_models[lang] = spacy.load("zh_core_web_sm")
-                elif lang == 'en':
-                    # 英文模型
-                    self.nlp_models[lang] = spacy.load("en_core_web_sm")
-                else:
-                    # 默认使用英文模型
-                    self.nlp_models[lang] = spacy.load("en_core_web_sm")
-            except OSError:
-                # 如果模型未安装，下载并安装
-                if lang in ['zh-cn', 'zh-hk']:
-                    spacy.cli.download("zh_core_web_sm")
-                    self.nlp_models[lang] = spacy.load("zh_core_web_sm")
-                else:
-                    spacy.cli.download("en_core_web_sm")
-                    self.nlp_models[lang] = spacy.load("en_core_web_sm")
-                
-        return self.nlp_models[lang]
 
     def _detect_language(self, text: str) -> str:
         """检测文本语言
@@ -186,91 +115,6 @@ class AdvancedWebSearchTool:
         except:
             return 'en'  # 检测失败时默认使用英语
 
-    def _extract_keywords_spacy(self, text: str) -> List[str]:
-        """使用spacy提取关键词，优化支持简体中文、繁体中文（香港）和英文
-        
-        Args:
-            text: 输入文本
-            
-        Returns:
-            关键词列表
-        """
-        # 检测语言
-        lang = self._detect_language(text)
-        
-        # 获取对应的spacy模型
-        nlp = self._get_nlp_model(lang)
-        
-        # 针对文本长度进行安全处理
-        if len(text) > 100000:
-            text = text[:100000]  # 避免处理过长文本
-        
-        # 处理文本
-        doc = nlp(text)
-        
-        keywords = set()
-        
-        # 提取名词短语
-        for chunk in doc.noun_chunks:
-            if len(chunk.text.strip()) > 1:  # 过滤单字符
-                keywords.add(chunk.text.strip().lower())
-        
-        # 提取命名实体
-        for ent in doc.ents:
-            if len(ent.text.strip()) > 1:
-                keywords.add(ent.text.strip().lower())
-        
-        # 针对不同语言使用不同的提取策略
-        if lang == 'en':
-            # 英文：提取名词、动词、形容词
-            for token in doc:
-                if token.pos_ in ['NOUN', 'VERB', 'ADJ'] and not token.is_stop and len(token.text.strip()) > 1:
-                    keywords.add(token.text.strip().lower())
-        else:
-            # 中文（简体和繁体）：保留所有非停用词的名词、动词、形容词和副词
-            for token in doc:
-                if token.pos_ in ['NOUN', 'VERB', 'ADJ', 'ADV'] and not token.is_stop and len(token.text.strip()) > 0:
-                    keywords.add(token.text.strip().lower())
-        
-        return list(keywords)
-
-    def _keyword_similarity(self, text1: str, text2: str) -> float:
-        """计算两段文本的关键词相似度
-        
-        Args:
-            text1: 第一段文本
-            text2: 第二段文本
-            
-        Returns:
-            相似度分数 (0-1)
-        """
-        # 使用spacy提取关键词
-        keywords1 = set(self._extract_keywords_spacy(text1))
-        keywords2 = set(self._extract_keywords_spacy(text2))
-        
-        if not keywords1 or not keywords2:
-            return 0.0
-            
-        # 计算Jaccard相似度
-        intersection = len(keywords1.intersection(keywords2))
-        union = len(keywords1.union(keywords2))
-        
-        return intersection / union if union > 0 else 0.0
-
-    def _preprocess_query_for_language(self, query: str, lang: str) -> str:
-        """针对不同语言对查询进行预处理
-        
-        Args:
-            query: 原始查询
-            lang: 语言代码
-            
-        Returns:
-            预处理后的查询
-        """
-        processed_query = query
-        if lang == 'en':
-            processed_query = query.lower()
-        return processed_query
 
     def _generate_search_queries(self, original_query: str) -> List[Dict]:
         """生成搜索查询
@@ -394,56 +238,6 @@ class AdvancedWebSearchTool:
                 }
             ]
             return fallback_queries
-
-    def _hybrid_retrieval_pdf(self, query: str, documents: List[Document], top_k: int = 3) -> List[Document]:
-        """针对PDF文档的混合检索（余弦相似度 + BM25）
-        
-        Args:
-            query: 搜索查询
-            documents: 文档列表
-            top_k: 返回结果数量
-            
-        Returns:
-            最相关的文档列表
-        """
-        if not documents:
-            return []
-            
-        # 准备文档内容
-        texts = [doc.page_content for doc in documents]
-        
-        # 1. 余弦相似度计算
-        # 获取查询和文档的嵌入向量
-        query_embedding = self.embeddings.embed_query(query)
-        doc_embeddings = self.embeddings.embed_documents(texts)
-        
-        # 计算余弦相似度
-        cosine_scores = cosine_similarity(
-            [query_embedding], 
-            doc_embeddings
-        )[0]
-        
-        # 2. BM25检索
-        # 对文档进行分词
-        tokenized_texts = [text.split() for text in texts]  # 简单分词，可以根据语言改进
-        bm25 = BM25Okapi(tokenized_texts)
-        
-        # 对查询进行分词并计算BM25分数
-        tokenized_query = query.split()
-        bm25_scores = np.array(bm25.get_scores(tokenized_query))
-        
-        # 归一化分数
-        cosine_scores = (cosine_scores - cosine_scores.min()) / (cosine_scores.max() - cosine_scores.min() + 1e-8)
-        bm25_scores = (bm25_scores - bm25_scores.min()) / (bm25_scores.max() - bm25_scores.min() + 1e-8)
-        
-        # 3. 混合排序（简单加权）
-        final_scores = 0.6 * cosine_scores + 0.4 * bm25_scores
-        
-        # 获取top_k文档的索引
-        top_indices = np.argsort(final_scores)[-top_k:][::-1]
-        
-        # 返回排序后的文档
-        return [documents[i] for i in top_indices]
 
     def _process_pdf_content(self, pdf_content: bytes, query: str) -> List[str]:
         """处理PDF内容并返回所有文本片段

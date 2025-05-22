@@ -14,33 +14,9 @@ from langchain_core.tools import StructuredTool
 
 from src.tools.calculator import calculate
 from src.tools.news_query import news_query_tool
-from src.tools.advanced_web_search import advanced_web_search_tool
-
-def check_environment():
-    required_vars = {
-        "ZHIPUAI_API_KEY": "智谱AI API密钥",
-        "DATABASE_URL": "数据库连接URL",
-        "LANGSMITH_API_KEY": "LangSmith API密钥",
-        "LANGSMITH_PROJECT": "LangSmith项目名称"
-    }
-
-    missing_vars = []
-    for var, desc in required_vars.items():
-        if not os.getenv(var):
-            missing_vars.append(f"{var} ({desc})")
-
-    if missing_vars:
-        print("错误: 以下必要的环境变量未设置:")
-        for var in missing_vars:
-            print(f"- {var}")
-        sys.exit(1)
-
-    os.environ["LANGSMITH_TRACING"] = "true"
-    if not os.getenv("LANGSMITH_PROJECT"):
-        os.environ["LANGSMITH_PROJECT"] = "default"
+from src.tools.advanced_web_search_mini import advanced_web_search_tool
 
 load_dotenv()
-check_environment()
 
 class TaxAgent:
     def __init__(self):
@@ -58,12 +34,11 @@ class TaxAgent:
         self.llm = ChatDeepSeek(
             model="deepseek-chat",
             temperature=0,  
-            api_key="sk-dcf038e6bf8449fd96641dee701d5be1"
+            api_key=os.getenv("DEEPSEEK_API_KEY")
         )
 
         self.tools = [
             calculate,
-            # news_query_tool,
             advanced_web_search_tool
         ]
 
