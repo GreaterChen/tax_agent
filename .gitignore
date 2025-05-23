@@ -8,5 +8,14 @@ test.py
 test/
 *.json
 logs/
-src/tools/vector_search/Dependencies/dataset
-src/tools/vector_search/Dependencies/input
+src/tools/vector_search/Dependencies/dataset/
+src/tools/vector_search/Dependencies/input/
+results/
+*.pdf
+*.txt
+*.docx
+*.doc
+*.xls
+*.xlsx
+*.ppt
+*.pptx
