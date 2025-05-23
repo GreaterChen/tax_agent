@@ -10,3 +10,9 @@ Requests==2.32.3
 SQLAlchemy==2.0.38
 urllib3==2.4.0
 uvicorn==0.34.2
+langchain_deepseek
+pymysql
+bs4
+PyPDF2
+spacy
+langdetect

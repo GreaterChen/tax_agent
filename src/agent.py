@@ -1,4 +1,4 @@
-"""税务问答Agent实现 (修复无限自问自答bug + __end__ KeyError处理 + 修复Postman无返回问题)"""
+"""税务问答Agent实现"""
 import os
 import sys
 from typing import List, Dict, Optional
@@ -14,7 +14,7 @@ from langchain_core.tools import StructuredTool
 
 from src.tools.calculator import calculate
 from src.tools.news_query import news_query_tool
-from src.tools.advanced_web_search_mini import advanced_web_search_tool
+from src.tools.advanced_web_search import advanced_web_search_tool
 
 load_dotenv()
 

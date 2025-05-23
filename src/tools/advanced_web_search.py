@@ -565,15 +565,9 @@ class AdvancedWebSearchTool:
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
             
-            # 配置代理
-            proxies = {
-                'http': 'http://127.0.0.1:7890',
-                'https': 'http://127.0.0.1:7890'
-            }
-            
             logger.info(f"发送HTTP请求: {url}")
             
-            response = requests.get(url, timeout=15, headers=headers, proxies=proxies)
+            response = requests.get(url, timeout=15, headers=headers)
             response.raise_for_status()
             
             content_type = response.headers.get('Content-Type', '').lower()
