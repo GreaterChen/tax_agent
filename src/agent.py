@@ -12,9 +12,9 @@ from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.tools import StructuredTool
 
-from src.tools.calculator import calculate
+from src.tools.latex_calc.calculator import calculate
 from src.tools.news_query import news_query_tool
-from src.tools.advanced_web_search import advanced_web_search_tool
+from src.tools.web_search import advanced_web_search_tool
 
 load_dotenv()
 
