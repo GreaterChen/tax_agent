@@ -84,7 +84,7 @@ class AdvancedWebSearchInput(BaseModel):
     """高级网络搜索查询输入"""
     query: str = Field(..., description="用户的原始问题")
 
-class AdvancedWebSearchTool:
+class WebSearchTool:
     def __init__(self):
         """初始化搜索工具及LLM"""
         self.llm = ChatTongyi(
@@ -891,7 +891,7 @@ class AdvancedWebSearchTool:
             return f"搜索过程中发生错误: {str(e)}"
 
 # 创建工具实例
-advanced_web_search_instance = AdvancedWebSearchTool()
+advanced_web_search_instance = WebSearchTool()
 
 # 封装为StructuredTool
 advanced_web_search_tool = StructuredTool.from_function(

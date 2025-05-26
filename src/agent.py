@@ -12,9 +12,11 @@ from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.tools import StructuredTool
 
-from src.tools.latex_calc.calculator import calculate
+from src.tools.latex_calc.latex_calc import latex_calc_tool
 from src.tools.news_query import news_query_tool
-from src.tools.web_search import advanced_web_search_tool
+from src.tools.web_search.web_search import advanced_web_search_tool
+from src.tools.vector_search.vector_search import vector_search_tool
+
 
 load_dotenv()
 
@@ -38,21 +40,24 @@ class TaxAgent:
         )
 
         self.tools = [
-            calculate,
-            advanced_web_search_tool
+            latex_calc_tool,
+            advanced_web_search_tool,
+            vector_search_tool
         ]
 
         system_prompt = """你是一个专业的税务顾问助手。你可以:
 1. 回答税务相关问题
 2. 使用计算器进行税务计算
 3. 使用advanced_web_search工具进行高级的互联网搜索最新的税务新闻和政策
+4. 使用vector_search工具在本地知识库中搜索相关信息
 
 语言要求：
 - 保持回答语言与提问语言一致
 
 工具使用说明：
-- 需要计算时，使用calculator工具
+- 需要计算时，使用latex_calc工具,接收的参数是标准的latex表达式和参数取值
 - 需要搜索互联网上的税务信息或最新政策时，使用advanced_web_search工具进行高级搜索, 只可以调用一次！，如果一次搜索不到就不要尝试再搜索了
+- 需要搜索本地知识库中的信息时，使用vector_search工具进行向量搜索
 - 在向advanced_web_search工具提问时，请保证不要私自更改问题的范围、限定，比如添加年份，添加new zealand这些根本在问题没有提到的问题，最好直接原封不动使用用户对话中的问题，
 
 回答格式要求：

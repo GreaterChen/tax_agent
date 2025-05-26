@@ -10,6 +10,8 @@ import numpy as np
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 import sys
+from pydantic import BaseModel, Field
+from langchain_core.tools import StructuredTool
 
 # 添加Dependencies目录到Python路径
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +34,11 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("vector_search")
+
+# 输入模型
+class VectorSearchInput(BaseModel):
+    """向量搜索输入"""
+    query: str = Field(..., description="搜索查询字符串")
 
 class VectorSearchTool:
     def __init__(self):
@@ -143,6 +150,25 @@ class VectorSearchTool:
             logger.error(f"执行混合检索时出错: {str(e)}")
             return []
 
+    def search(self, query: str) -> List[Dict[str, Any]]:
+        """执行向量搜索
+        
+        Args:
+            query: 搜索查询字符串
+            
+        Returns:
+            包含元数据和内容的搜索结果列表
+        """
+        try:
+            # 执行混合检索
+            results = self._hybrid_retrieval(query)
+            
+            # 返回结果
+            return results
+        except Exception as e:
+            logger.error(f"向量搜索时出错: {str(e)}")
+            return []
+
 def vector_search(query: str) -> List[Dict[str, Any]]:
     """执行向量搜索
     
@@ -164,6 +190,17 @@ def vector_search(query: str) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"向量搜索时出错: {str(e)}")
         return []
+
+# 创建工具实例
+vector_search_instance = VectorSearchTool()
+
+# 封装为StructuredTool
+vector_search_tool = StructuredTool.from_function(
+    func=vector_search_instance.search,
+    name="vector_search",
+    description="基于向量的搜索功能，结合BM25和余弦相似度进行混合检索",
+    args_schema=VectorSearchInput
+)
 
 # 测试代码
 if __name__ == "__main__":

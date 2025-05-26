@@ -2,6 +2,15 @@ from typing import Dict, Union, Any
 from sympy import symbols, N, E, pi, factorial, sin, cos, tan, sqrt, exp
 from sympy.parsing.latex import parse_latex
 import logging
+from pydantic import BaseModel, Field
+from langchain_core.tools import StructuredTool
+
+# 输入模型
+class LatexCalculatorInput(BaseModel):
+    """LaTeX计算器输入"""
+    latex_expr: str = Field(..., description="LaTeX格式的数学表达式")
+    values: Dict[str, float] = Field(..., description="变量值字典")
+    precision: int = Field(default=6, description="数值结果的精度（小数位数）")
 
 class LatexCalculator:
     """LaTeX计算器类，用于解析和计算LaTeX格式的数学表达式"""
@@ -108,6 +117,17 @@ class LatexCalculator:
             return True
         except:
             return False
+
+# 创建工具实例
+latex_calculator_instance = LatexCalculator()
+
+# 封装为StructuredTool
+latex_calc_tool = StructuredTool.from_function(
+    func=latex_calculator_instance.calculate,
+    name="latex_calc",
+    description="计算LaTeX格式的数学表达式，支持变量替换和高精度计算",
+    args_schema=LatexCalculatorInput
+)
 
 # 使用示例
 if __name__ == "__main__":
