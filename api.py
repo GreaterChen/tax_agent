@@ -35,6 +35,9 @@ class Question(BaseModel):
     """问题请求模型"""
     text: str
     thread_id: Optional[str] = None
+    web_search: Optional[bool] = True
+    session_files: Optional[List[str]] = []
+    enable_rag: Optional[bool] = True
     
 class Answer(BaseModel):
     """回答响应模型"""
@@ -55,7 +58,8 @@ async def query(question: Question):
         # 使用提供的thread_id或生成新的uuid
         thread_id = question.thread_id or f"thread_{uuid.uuid4().hex}"
         
-        answers = agent.query(question.text, thread_id)
+        answers = agent.query(question.text, thread_id, question.web_search, 
+                             question.session_files, question.enable_rag)
         return Answer(answers=answers, thread_id=thread_id)
     except Exception as e:
         raise HTTPException(
