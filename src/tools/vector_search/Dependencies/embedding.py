@@ -22,7 +22,7 @@ from langchain_community.document_loaders import (
     UnstructuredRTFLoader
 )
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
+from FlagEmbedding import BGEM3FlagModel
 from langchain_core.documents import Document
 
 # 配置日志
@@ -35,9 +35,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("embedding")
 
-# 初始化嵌入模型
-embeddings_model = HuggingFaceEmbeddings(
-    model_name="intfloat/multilingual-e5-large"  # 使用多语言嵌入模型
+# 初始化BGE-M3模型（替换原来的HuggingFaceEmbeddings）
+embeddings_model = BGEM3FlagModel(
+    'BAAI/bge-m3',
+    use_fp16=True  # 加速推理，轻微性能损失
 )
 
 # 初始化文本分割器
@@ -48,23 +49,38 @@ text_splitter = RecursiveCharacterTextSplitter(
     separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", " ", ""]
 )
 
-def process_query_embedding(query: str) -> List[float]:
-    """处理查询的嵌入向量
+def process_query_embedding(query: str) -> Dict[str, Any]:
+    """处理查询的多种嵌入向量
     
     Args:
         query: 查询字符串
         
     Returns:
-        嵌入向量
+        包含dense、sparse、colbert向量的字典
     """
     try:
-        # 使用嵌入模型生成向量
-        query_embedding = embeddings_model.embed_query(query)
-        return query_embedding
+        # 使用BGE-M3生成多种向量
+        output = embeddings_model.encode(
+            [query], 
+            return_dense=True, 
+            return_sparse=True, 
+            return_colbert_vecs=True,
+            max_length=8192
+        )
+        
+        return {
+            'dense': output['dense_vecs'][0],
+            'sparse': output['lexical_weights'][0] if output['lexical_weights'] else {},
+            'colbert': output['colbert_vecs'][0] if output['colbert_vecs'] else None
+        }
     except Exception as e:
         logger.error(f"生成查询嵌入向量时出错: {str(e)}")
         # 返回空向量作为后备
-        return [0.0] * 1024  # 假设向量维度为1024
+        return {
+            'dense': [0.0] * 1024,  # BGE-M3维度为1024
+            'sparse': {},
+            'colbert': None
+        }
 
 def load_document(file_path: str) -> List[Document]:
     """根据文件类型加载文档
@@ -208,12 +224,18 @@ def process_documents(input_dir: str = None, output_dir: str = None, batch_size:
             for i in tqdm(range(0, len(chunks), batch_size), desc="处理文档块"):
                 batch = chunks[i:i + batch_size]
                 
-                # 批量生成嵌入向量
+                # 批量生成嵌入向量（BGE-M3支持多种向量）
                 texts = [chunk.page_content for chunk in batch]
-                embedding_vectors = embeddings_model.embed_documents(texts)
+                outputs = embeddings_model.encode(
+                    texts, 
+                    return_dense=True, 
+                    return_sparse=True, 
+                    return_colbert_vecs=True,
+                    max_length=8192
+                )
                 
                 # 处理每个块的结果
-                for j, (chunk, embedding_vector) in enumerate(zip(batch, embedding_vectors)):
+                for j, chunk in enumerate(batch):
                     chunk_idx = i + j
                     
                     # 更新块的位置信息
@@ -227,12 +249,14 @@ def process_documents(input_dir: str = None, output_dir: str = None, batch_size:
                     }
                     content_data.append(content_item)
                     
-                    # 添加到嵌入数据
+                    # 添加到嵌入数据（支持多种向量类型）
                     embedding_item = {
                         "id": f"{doc_id}_{chunk_idx}",
                         "doc_id": doc_id,
                         "chunk_id": chunk_idx,
-                        "vector": embedding_vector
+                        "dense_vector": outputs['dense_vecs'][j],
+                        "sparse_vector": outputs['lexical_weights'][j] if outputs['lexical_weights'] else {},
+                        "colbert_vector": outputs['colbert_vecs'][j] if outputs['colbert_vecs'] else None
                     }
                     embeddings_data.append(embedding_item)
             
@@ -260,4 +284,4 @@ if __name__ == "__main__":
     
     # 测试查询嵌入
     query_embedding = process_query_embedding("税务相关法规")
-    print(f"查询嵌入向量维度: {len(query_embedding)}") 
+    print(f"查询嵌入向量维度: {len(query_embedding['dense'])}") 
