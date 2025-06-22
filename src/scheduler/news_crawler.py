@@ -29,11 +29,11 @@ class NewsCrawler:
         Args:
             run_immediately: 是否立即执行一次爬取任务
         """
-        # 每天凌晨2点执行
+        # 每天凌晨4点执行
         self.scheduler.add_job(
             self.crawl_all,
             'cron',
-            hour=2,
+            hour=4,
             minute=0
         )
         self.scheduler.start()
