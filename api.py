@@ -5,9 +5,14 @@ from typing import List, Optional
 from contextlib import asynccontextmanager
 import os
 import uuid
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
 
 from src.agent import TaxAgent
 from src.scheduler.news_crawler import NewsCrawler
+from src.utils.llm_manager import llm_manager
 
 # 创建爬虫实例
 crawler = NewsCrawler(os.getenv("DATABASE_URL"))
@@ -65,6 +70,18 @@ async def query(question: Question):
         raise HTTPException(
             status_code=500,
             detail=f"处理请求时发生错误: {str(e)}"
+        )
+
+@app.get("/status")
+async def get_llm_status():
+    """获取LLM系统状态"""
+    try:
+        status = await llm_manager.get_status()
+        return status
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"获取状态时发生错误: {str(e)}"
         )
 
 if __name__ == "__main__":

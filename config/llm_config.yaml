@@ -1,0 +1,74 @@
+ # LLM API Key 轮询配置
+llm_config:
+  # 全局配置
+  global:
+    max_token_window: 100000  # 最大token窗口
+    request_timeout: 180      # 请求超时时间(秒)
+    max_retries: 3           # 最大重试次数
+    retry_delay: 1           # 重试延迟(秒)
+    fallback_enabled: true   # 是否启用降级策略
+    
+  # API Provider 配置
+  providers:
+    # 通义千问配置
+    qwen:
+      base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      api_keys:
+        - key: "${QWEN_API_KEY_1}"
+          priority: 1
+          qpm_limit: 100        # 每分钟请求数限制
+          tpm_limit: 200000     # 每分钟token数限制
+          enabled: true
+        - key: "${QWEN_API_KEY_2}" 
+          priority: 2
+          qpm_limit: 100
+          tpm_limit: 200000
+          enabled: true
+      models:
+        - name: "qwen-max-latest"
+          max_tokens: 8000
+          temperature: 0.1
+          enabled: true
+        - name: "qwen-max"
+          max_tokens: 6000
+          temperature: 0.1
+          enabled: true
+          
+    # OpenAI配置  
+    openai:
+      base_url: "https://api.openai.com/v1"
+      api_keys:
+        - key: "${OPENAI_API_KEY_1}"
+          priority: 1
+          qpm_limit: 50
+          tpm_limit: 150000
+          enabled: true
+        - key: "${OPENAI_API_KEY_2}"
+          priority: 2  
+          qpm_limit: 50
+          tpm_limit: 150000
+          enabled: true
+      models:
+        - name: "gpt-4o-mini"
+          max_tokens: 4000
+          temperature: 0.1
+          enabled: true
+
+  # 模型优先级配置 (按优先级顺序)
+  model_priority:
+    - provider: "qwen"
+      model: "qwen-max-latest"
+    - provider: "qwen" 
+      model: "qwen-max"
+    - provider: "openai"
+      model: "gpt-4o-mini"
+
+  # 限流配置
+  rate_limit:
+    # 使用Redis进行分布式限流
+    backend: "redis"
+    key_prefix: "llm_rate_limit"
+    # 限流窗口大小(秒)
+    window_size: 60
+    # 统计精度(秒) 
+    precision: 1 

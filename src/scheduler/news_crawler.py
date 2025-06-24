@@ -15,7 +15,7 @@ class NewsCrawler:
         """
         self.agent = NewsCrawlerAgent(
             db_url=db_url,
-            zhipuai_api_key=os.getenv("ZHIPUAI_API_KEY"),
+            tongyi_api_key=os.getenv("DASHSCOPE_API_KEY"),
         )
         self.scheduler = BackgroundScheduler()
         
