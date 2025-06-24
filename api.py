@@ -10,9 +10,8 @@ from dotenv import load_dotenv
 # 加载环境变量
 load_dotenv()
 
-from src.agent import TaxAgent
+from src.agent import tax_agent
 from src.scheduler.news_crawler import NewsCrawler
-from src.utils.llm_manager import llm_manager
 
 # 创建爬虫实例
 crawler = NewsCrawler(os.getenv("DATABASE_URL"))
@@ -33,8 +32,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# 创建Agent实例
-agent = TaxAgent()
+# 使用全局Agent实例
 
 class Question(BaseModel):
     """问题请求模型"""
@@ -63,8 +61,8 @@ async def query(question: Question):
         # 使用提供的thread_id或生成新的uuid
         thread_id = question.thread_id or f"thread_{uuid.uuid4().hex}"
         
-        answers = agent.query(question.text, thread_id, question.web_search, 
-                             question.session_files, question.enable_rag)
+        answers = await tax_agent.query(question.text, thread_id, question.web_search, 
+                                  question.session_files, question.enable_rag)
         return Answer(answers=answers, thread_id=thread_id)
     except Exception as e:
         raise HTTPException(
@@ -76,7 +74,7 @@ async def query(question: Question):
 async def get_llm_status():
     """获取LLM系统状态"""
     try:
-        status = await llm_manager.get_status()
+        status = await tax_agent.get_status()
         return status
     except Exception as e:
         raise HTTPException(

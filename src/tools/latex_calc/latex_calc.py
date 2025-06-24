@@ -79,8 +79,19 @@ class LatexCalculator:
                 if name in values:
                     substitution_values[symbol] = values[name]
             
+            # 判断表达式类型并获取要计算的部分
+            if hasattr(expr, 'rhs'):
+                # 如果是等式（如 y = sin(x)），使用右边部分
+                target_expr = expr.rhs
+            elif hasattr(expr, 'lhs') and hasattr(expr, 'rhs'):
+                # 处理等式的情况
+                target_expr = expr.rhs
+            else:
+                # 如果是普通表达式（如 sin(x) + 1），直接使用整个表达式
+                target_expr = expr
+            
             # 计算符号结果
-            symbolic_result = expr.rhs.subs(substitution_values)
+            symbolic_result = target_expr.subs(substitution_values)
             
             # 计算数值结果
             numeric_result = N(symbolic_result, precision)
@@ -89,7 +100,6 @@ class LatexCalculator:
                 "latex_expression": latex_expr,
                 "variables": values,
                 "symbolic_result": str(symbolic_result),
-                # "numeric_result": float(numeric_result) if not numeric_result.is_complex else complex(numeric_result),
                 "numeric_result": numeric_result,
                 "success": True
             }

@@ -41,6 +41,9 @@ from langchain_community.document_loaders import BSHTMLLoader
 from langchain_text_splitters import HTMLSemanticPreservingSplitter
 from langchain_core.documents import Document
 
+# 导入embedding配置
+from config.embedding_config import get_embedding_model_config
+
 # 配置日志
 def setup_logging():
     """配置日志系统"""
@@ -96,10 +99,9 @@ class WebSearchTool:
         self.result_cache = {}
         self.content_cache = {}
         
-        # 初始化向量存储 - 使用主流的多语言嵌入模型
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name="intfloat/multilingual-e5-large"  # 广泛使用的多语言嵌入模型，MTEB排行榜第一
-        )
+        # 初始化向量存储 - 使用统一的embedding配置
+        embedding_config = get_embedding_model_config()
+        self.embeddings = HuggingFaceEmbeddings(**embedding_config)
         
         # 初始化spacy模型缓存
         self.nlp_models = {}

@@ -25,6 +25,9 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 
+# 导入embedding配置
+from config.embedding_config import get_embedding_model_config, get_text_splitter_config
+
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
@@ -35,18 +38,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("embedding")
 
-# 初始化嵌入模型
-embeddings_model = HuggingFaceEmbeddings(
-    model_name="intfloat/multilingual-e5-large"  # 使用多语言嵌入模型
-)
+# 初始化嵌入模型 - 使用统一配置
+embedding_config = get_embedding_model_config()
+embeddings_model = HuggingFaceEmbeddings(**embedding_config)
 
-# 初始化文本分割器
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=1000,
-    chunk_overlap=100,
-    length_function=len,
-    separators=["\n\n", "\n", "。", "！", "？", ".", "!", "?", " ", ""]
-)
+# 初始化文本分割器 - 使用统一配置
+text_splitter_config = get_text_splitter_config()
+text_splitter = RecursiveCharacterTextSplitter(**text_splitter_config)
 
 def process_query_embedding(query: str) -> List[float]:
     """处理查询的嵌入向量
