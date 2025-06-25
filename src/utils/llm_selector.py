@@ -11,6 +11,15 @@ from src.utils.token_counter import TokenCounter
 
 logger = logging.getLogger(__name__)
 
+class RateLimitExceededException(Exception):
+    """限流超限异常"""
+    
+    def __init__(self, message: str, available_models: list = None, retry_after: int = 60):
+        super().__init__(message)
+        self.available_models = available_models or []
+        self.retry_after = retry_after
+        self.timestamp = asyncio.get_event_loop().time() if asyncio.get_event_loop().is_running() else 0
+
 class LLMSelector:
     """LLM选择器 - 负责智能选择可用的LLM"""
     
@@ -89,16 +98,14 @@ class LLMSelector:
                 # 继续尝试下一个LLM
                 continue
         
-        # 如果所有LLM都限流，使用第一个可用的（降级策略）
-        logger.warning("所有LLM都达到限流，使用优先级最高的LLM（降级策略）")
-        fallback_llm = available_llms[0].copy()
-        fallback_llm.update({
-            "reservation_key": None,
-            "estimated_request_tokens": request_tokens,
-            "estimated_total_tokens": request_tokens * 4,  # 降级时使用保守估算
-            "is_fallback": True
-        })
-        return fallback_llm
+        # 如果所有LLM都限流，抛出异常而不是降级
+        available_models = [llm['name'] for llm in available_llms if llm['enabled']]
+        logger.error(f"所有LLM都达到限流限制: {available_models}")
+        raise RateLimitExceededException(
+            "系统目前处于请求高峰期，所有模型都已达到限制。请稍后再试，或联系管理员。",
+            available_models=available_models,
+            retry_after=60  # 建议60秒后重试
+        )
     
     async def _rollback_qpm_count(self, llm_name: str):
         """回滚QPM计数（当TPM预留失败时）"""
