@@ -120,7 +120,7 @@ class TaxAgent:
                 loop.close()
     
     async def _execute_workflow(self, workflow, enhanced_question: str, thread_id: str) -> List[str]:
-        """执行工作流，支持重试机制"""
+        """执行工作流，支持重试机制和完整TPM统计"""
         messages = [HumanMessage(content=enhanced_question)]
         config = {
             "configurable": {
@@ -131,14 +131,28 @@ class TaxAgent:
         
         result = []
         max_retries = 3
+        selected_llm_info = None  # 记录选择的LLM信息
         
         for retry in range(max_retries):
             try:
+                # 重新选择LLM（每次重试都重新选择）
+                selected_llm_info = await self._select_llm_with_retry(enhanced_question)
+                tools = tools_manager.get_tools(web_search=True)
+                workflow = self._create_graph(tools, selected_llm_info)
+                
+                # 记录实际回复内容用于token统计
+                all_responses = []
+                
                 for step in workflow.stream({"messages": messages}, config=config, stream_mode="updates"):
                     if "agent" in step and "messages" in step['agent']:
                         last_msg = step['agent']['messages'][-1]
                         if isinstance(last_msg, AIMessage) and last_msg.content:
                             result.append(last_msg.content)
+                            all_responses.append(last_msg.content)
+                
+                # 如果成功获得回复，进行完整的TPM统计
+                if result and selected_llm_info:
+                    await self._finalize_token_usage(selected_llm_info, enhanced_question, all_responses)
                 
                 # 如果成功，跳出重试循环
                 if result:
@@ -150,18 +164,89 @@ class TaxAgent:
                     # 限流错误处理
                     self._handle_rate_limit_error(enhanced_question, retry, max_retries)
                     if retry < max_retries - 1:
-                        # 重新创建工作流
-                        selected_llm = await self._select_llm_with_retry(enhanced_question)
-                        tools = tools_manager.get_tools(web_search=True)  # 简化重试时的工具配置
-                        workflow = self._create_graph(tools, selected_llm)
                         time.sleep(2 ** retry)  # 指数退避
                     else:
+                        # 最后一次重试失败，也需要清理token预留
+                        if selected_llm_info:
+                            await self._cleanup_failed_request(selected_llm_info)
                         raise e
                 else:
-                    # 非限流错误，直接抛出
+                    # 非限流错误，清理token预留并直接抛出
+                    if selected_llm_info:
+                        await self._cleanup_failed_request(selected_llm_info)
                     raise e
         
         return result
+
+    async def _finalize_token_usage(self, llm_info: Dict, request_text: str, responses: List[str]):
+        """完成完整的TPM统计"""
+        try:
+            from src.utils.token_counter import TokenCounter
+            token_counter = TokenCounter()
+            
+            llm_name = llm_info["name"]
+            reservation_key = llm_info.get("reservation_key")
+            
+            if not reservation_key:
+                logger.warning(f"未找到{llm_name}的token预留信息，跳过TPM最终确定")
+                return
+            
+            # 计算实际token使用量
+            reference_model = self._get_reference_model_name(llm_info)
+            actual_request_tokens = token_counter.count_tokens(request_text, reference_model)
+            
+            # 计算所有回复的token总数
+            actual_response_tokens = 0
+            for response in responses:
+                actual_response_tokens += token_counter.count_tokens(response, reference_model)
+            
+            # 最终确定token使用量
+            finalize_result = await llm_selector.rate_limiter.finalize_token_usage(
+                llm_name,
+                reservation_key,
+                actual_request_tokens,
+                actual_response_tokens
+            )
+            
+            # 记录详细的使用统计
+            total_actual_tokens = actual_request_tokens + actual_response_tokens
+            estimated_tokens = llm_info.get("estimated_total_tokens", 0)
+            
+            logger.info(f"TPM统计完成 - {llm_name}: "
+                       f"请求Token={actual_request_tokens}, "
+                       f"回复Token={actual_response_tokens}, "
+                       f"总计={total_actual_tokens}, "
+                       f"预估={estimated_tokens}, "
+                       f"效率={finalize_result.get('efficiency', 'N/A')}")
+            
+        except Exception as e:
+            logger.error(f"TPM最终统计失败: {e}")
+
+    async def _cleanup_failed_request(self, llm_info: Dict):
+        """清理失败请求的token预留"""
+        try:
+            llm_name = llm_info["name"]
+            reservation_key = llm_info.get("reservation_key")
+            
+            if reservation_key:
+                # 清理预留的token（设置实际使用为0）
+                await llm_selector.rate_limiter.finalize_token_usage(
+                    llm_name, reservation_key, 0, 0
+                )
+                logger.info(f"已清理{llm_name}的失败请求token预留")
+                
+        except Exception as e:
+            logger.error(f"清理失败请求token预留时出错: {e}")
+
+    def _get_reference_model_name(self, llm_info: Dict) -> str:
+        """从LLM配置中提取模型名称用于token计算"""
+        llm = llm_info.get("llm")
+        if hasattr(llm, "model_name"):
+            return llm.model_name
+        elif hasattr(llm, "model"):
+            return llm.model
+        else:
+            return "gpt-4o-mini"  # 默认模型
     
     def _handle_rate_limit_error(self, enhanced_question: str, retry: int, max_retries: int):
         """处理限流错误"""

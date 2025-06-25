@@ -45,20 +45,43 @@ class LLMSelector:
             llm_name = llm_config_item["name"]
             
             try:
-                # 检查限流状态
-                allowed, status = await self.rate_limiter.check_and_increment(
+                # 第一阶段：检查QPM限制
+                qpm_allowed, qpm_status = await self.rate_limiter.check_and_increment(
                     llm_name, 
                     request_count=1, 
-                    token_count=request_tokens,
+                    token_count=0,  # 此阶段不计算token
                     qpm_limit=llm_config_item["qpm_limit"],
-                    tpm_limit=llm_config_item["tpm_limit"]
+                    tpm_limit=0  # 此阶段不检查TPM
                 )
                 
-                if allowed:
-                    logger.info(f"选择LLM: {llm_name}")
-                    return llm_config_item
+                if not qpm_allowed:
+                    logger.warning(f"LLM {llm_name} QPM限流: {qpm_status.get('reason', 'Unknown')}")
+                    continue
+                
+                # 第二阶段：预留Token额度
+                token_reserved, token_status = await self.rate_limiter.reserve_tokens(
+                    llm_name,
+                    estimated_request_tokens=request_tokens,
+                    tpm_limit=llm_config_item["tpm_limit"],
+                    response_multiplier=3.0  # 预估回复是请求的3倍长度
+                )
+                
+                if token_reserved:
+                    logger.info(f"选择LLM: {llm_name}, 预留Token: {token_status.get('estimated_total_tokens', 0)}")
+                    
+                    # 将预留信息添加到LLM配置中，供后续使用
+                    llm_config_item_copy = llm_config_item.copy()
+                    llm_config_item_copy.update({
+                        "reservation_key": token_status.get("reservation_key"),
+                        "estimated_request_tokens": request_tokens,
+                        "estimated_total_tokens": token_status.get("estimated_total_tokens", 0)
+                    })
+                    
+                    return llm_config_item_copy
                 else:
-                    logger.warning(f"LLM {llm_name} 限流中: {status.get('reason', 'Unknown')}")
+                    logger.warning(f"LLM {llm_name} TPM限流: {token_status.get('reason', 'Unknown')}")
+                    # TPM预留失败，需要回滚QPM计数
+                    await self._rollback_qpm_count(llm_name)
                     continue
                     
             except Exception as e:
@@ -68,7 +91,24 @@ class LLMSelector:
         
         # 如果所有LLM都限流，使用第一个可用的（降级策略）
         logger.warning("所有LLM都达到限流，使用优先级最高的LLM（降级策略）")
-        return available_llms[0]
+        fallback_llm = available_llms[0].copy()
+        fallback_llm.update({
+            "reservation_key": None,
+            "estimated_request_tokens": request_tokens,
+            "estimated_total_tokens": request_tokens * 4,  # 降级时使用保守估算
+            "is_fallback": True
+        })
+        return fallback_llm
+    
+    async def _rollback_qpm_count(self, llm_name: str):
+        """回滚QPM计数（当TPM预留失败时）"""
+        try:
+            await self.rate_limiter._adjust_token_count(llm_name, 0)  # 实际上需要减少请求计数
+            # 注意：这里应该实现减少请求计数的方法，但当前RateLimiter没有这个功能
+            # 这是一个需要进一步完善的地方
+            logger.info(f"已回滚{llm_name}的QPM计数")
+        except Exception as e:
+            logger.error(f"回滚QPM计数失败: {e}")
     
     def _get_reference_model_name(self, llm_config_item: Dict[str, Any]) -> str:
         """

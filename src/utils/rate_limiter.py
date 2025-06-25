@@ -278,6 +278,143 @@ class RateLimiter:
         except Exception as e:
             logger.error(f"重置限制失败: {e}")
 
+    async def reserve_tokens(self, identifier: str, estimated_request_tokens: int, 
+                           tpm_limit: int, response_multiplier: float = 3.0) -> Tuple[bool, Dict[str, Any]]:
+        """
+        预留Token额度（双阶段TPM控制的第一阶段）
+        
+        Args:
+            identifier: 标识符
+            estimated_request_tokens: 预估的请求token数
+            tpm_limit: TPM限制
+            response_multiplier: 回复token预估倍数（通常回复比请求长2-4倍）
+            
+        Returns:
+            (是否成功预留, 预留信息)
+        """
+        try:
+            # 预估总token = 请求token + 预估回复token
+            estimated_response_tokens = int(estimated_request_tokens * response_multiplier)
+            estimated_total_tokens = estimated_request_tokens + estimated_response_tokens
+            
+            # 使用预估总token进行预检查和预留
+            allowed, status = await self.check_and_increment(
+                identifier,
+                request_count=0,  # 不增加请求计数，只预留token
+                token_count=estimated_total_tokens,
+                qpm_limit=0,  # 此阶段不检查QPM
+                tpm_limit=tpm_limit
+            )
+            
+            if allowed:
+                # 记录预留信息用于后续调整
+                reservation_key = f"{identifier}:reservation:{int(time.time())}"
+                redis_client = await self._get_redis_client()
+                reservation_data = {
+                    "estimated_total": estimated_total_tokens,
+                    "request_tokens": estimated_request_tokens,
+                    "estimated_response": estimated_response_tokens,
+                    "timestamp": int(time.time())
+                }
+                
+                await asyncio.get_event_loop().run_in_executor(
+                    None, 
+                    redis_client.setex, 
+                    reservation_key, 
+                    300,  # 5分钟过期
+                    json.dumps(reservation_data)
+                )
+                
+                status.update({
+                    "reservation_key": reservation_key,
+                    "estimated_total_tokens": estimated_total_tokens,
+                    "estimated_response_tokens": estimated_response_tokens
+                })
+            
+            return allowed, status
+            
+        except Exception as e:
+            logger.error(f"Token预留失败: {e}")
+            return False, {"error": str(e)}
+
+    async def finalize_token_usage(self, identifier: str, reservation_key: str, 
+                                 actual_request_tokens: int, actual_response_tokens: int) -> Dict[str, Any]:
+        """
+        最终确定实际Token使用量（双阶段TPM控制的第二阶段）
+        
+        Args:
+            identifier: 标识符
+            reservation_key: 预留key
+            actual_request_tokens: 实际请求token数
+            actual_response_tokens: 实际回复token数
+            
+        Returns:
+            调整结果信息
+        """
+        try:
+            redis_client = await self._get_redis_client()
+            
+            # 获取预留信息
+            reservation_data_str = await asyncio.get_event_loop().run_in_executor(
+                None, redis_client.get, reservation_key
+            )
+            
+            if not reservation_data_str:
+                logger.warning(f"未找到预留信息: {reservation_key}")
+                # 如果没有预留信息，直接记录实际使用量
+                actual_total = actual_request_tokens + actual_response_tokens
+                await self._adjust_token_count(identifier, actual_total)
+                return {"status": "fallback_recorded", "actual_tokens": actual_total}
+            
+            reservation_data = json.loads(reservation_data_str)
+            estimated_total = reservation_data["estimated_total"]
+            actual_total = actual_request_tokens + actual_response_tokens
+            
+            # 计算调整量
+            adjustment = actual_total - estimated_total
+            
+            if adjustment != 0:
+                await self._adjust_token_count(identifier, adjustment)
+            
+            # 删除预留记录
+            await asyncio.get_event_loop().run_in_executor(
+                None, redis_client.delete, reservation_key
+            )
+            
+            return {
+                "status": "finalized",
+                "estimated_tokens": estimated_total,
+                "actual_tokens": actual_total,
+                "adjustment": adjustment,
+                "efficiency": round(actual_total / estimated_total, 2) if estimated_total > 0 else 1.0
+            }
+            
+        except Exception as e:
+            logger.error(f"Token使用量最终确定失败: {e}")
+            return {"status": "error", "error": str(e)}
+
+    async def _adjust_token_count(self, identifier: str, adjustment: int):
+        """调整token计数"""
+        if adjustment == 0:
+            return
+            
+        try:
+            redis_client = await self._get_redis_client()
+            current_time = int(time.time())
+            current_window = (current_time // self.precision) * self.precision
+            token_key = self._get_window_key(identifier, "tokens", current_window)
+            
+            # 调整当前窗口的token计数
+            pipe = redis_client.pipeline()
+            pipe.incrby(token_key, adjustment)
+            pipe.expire(token_key, self.window_size + self.precision)
+            await asyncio.get_event_loop().run_in_executor(None, pipe.execute)
+            
+            logger.info(f"调整{identifier}的token计数: {adjustment}")
+            
+        except Exception as e:
+            logger.error(f"调整token计数失败: {e}")
+
 
 class ApiKeyRateLimiter:
     """API Key专用限流器"""

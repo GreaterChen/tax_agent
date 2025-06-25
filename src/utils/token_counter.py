@@ -6,6 +6,7 @@ import tiktoken
 from typing import List, Dict, Any, Optional
 import logging
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +272,63 @@ class TokenCounter:
             logger.error(f"消息截断失败: {e}")
             return messages[:10]  # 降级策略：只保留前10条消息
 
+    def estimate_response_tokens(self, request_text: str, model: str = "gpt-4o-mini", 
+                               multiplier: float = 3.0) -> int:
+        """
+        估算回复token数量
+        
+        Args:
+            request_text: 请求文本
+            model: 模型名称
+            multiplier: 回复长度倍数（通常回复比请求长2-4倍）
+            
+        Returns:
+            预估的回复token数
+        """
+        request_tokens = self.count_tokens(request_text, model)
+        return int(request_tokens * multiplier)
+
+    def analyze_conversation_tokens(self, request: str, response: str, 
+                                  model: str = "gpt-4o-mini") -> Dict[str, int]:
+        """
+        分析完整对话的token使用情况
+        
+        Args:
+            request: 请求文本
+            response: 回复文本
+            model: 模型名称
+            
+        Returns:
+            详细的token分析结果
+        """
+        request_tokens = self.count_tokens(request, model)
+        response_tokens = self.count_tokens(response, model)
+        total_tokens = request_tokens + response_tokens
+        
+        # 计算效率指标
+        efficiency_ratio = response_tokens / request_tokens if request_tokens > 0 else 0
+        
+        return {
+            "request_tokens": request_tokens,
+            "response_tokens": response_tokens,
+            "total_tokens": total_tokens,
+            "efficiency_ratio": round(efficiency_ratio, 2),
+            "model": model,
+            "timestamp": int(time.time())
+        }
+
+    def batch_count_tokens(self, texts: List[str], model: str = "gpt-4o-mini") -> List[int]:
+        """
+        批量计算多个文本的token数
+        
+        Args:
+            texts: 文本列表
+            model: 模型名称
+            
+        Returns:
+            每个文本的token数列表
+        """
+        return [self.count_tokens(text, model) for text in texts]
 
 # 全局实例
 token_counter = TokenCounter()
