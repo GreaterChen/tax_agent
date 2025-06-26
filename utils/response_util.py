@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 统一响应工具类
-用于构建API响应的标准格式
+用于构建API响应的标准格式，支持结构化错误信息和链路跟踪
 """
 from datetime import datetime
 from fastapi import status
@@ -10,6 +10,11 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 from typing import Any, Dict, Mapping, Optional, Union
+import logging
+
+# 导入标准异常类
+from src.utils.exceptions import BaseBusinessException
+from src.utils.error_codes import ErrorCode, ErrorCategory, ERROR_CODE_TO_HTTP_STATUS
 
 
 class HttpStatusConstant:
@@ -35,10 +40,12 @@ class HttpStatusConstant:
     WARN = 300             # 系统警告消息
 
 
+logger = logging.getLogger(__name__)
+
 class ResponseUtil:
     """
     统一响应工具类
-    用于构建API响应的标准格式
+    用于构建API响应的标准格式，支持结构化错误信息和链路跟踪
     """
 
     @classmethod
@@ -298,12 +305,76 @@ class ResponseUtil:
         )
 
     @classmethod
+    def error_from_exception(
+        cls,
+        exception: BaseBusinessException,
+        headers: Optional[Mapping[str, str]] = None,
+        media_type: Optional[str] = None,
+        background: Optional[BackgroundTask] = None,
+    ) -> Response:
+        """
+        从业务异常创建错误响应
+        
+        :param exception: 业务异常对象
+        :param headers: 可选，响应头信息
+        :param media_type: 可选，响应结果媒体类型
+        :param background: 可选，响应返回后执行的后台任务
+        :return: 错误响应结果
+        """
+        error_dict = exception.to_dict()
+        
+        # 根据异常类别确定HTTP状态码
+        http_status = ERROR_CODE_TO_HTTP_STATUS.get(
+            exception.error_code.category, 
+            status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        
+        # 构建响应内容
+        result = {
+            'code': exception.error_code.code,
+            'msg': exception.user_message,  # 用户友好的错误信息
+            'success': False,
+            'time': datetime.now(),
+            'trace_id': exception.trace_id,
+            'retryable': exception.error_code.retryable,
+            'category': exception.error_code.category.value,
+        }
+        
+        # 添加调试信息（仅在开发环境）
+        if logger.isEnabledFor(logging.DEBUG):
+            result['debug'] = {
+                'error_message': exception.message,
+                'context': error_dict['context'],
+                'extra_data': error_dict['extra_data'],
+                'cause': error_dict['cause'],
+            }
+        
+        # 特殊处理限流异常
+        if exception.error_code.category == ErrorCategory.RATE_LIMIT:
+            result['retry_after'] = exception.extra_data.get('retry_after', 60)
+            result['available_models'] = exception.extra_data.get('available_models', [])
+        
+        # 记录错误日志
+        log_level = getattr(logging, exception.error_code.log_level, logging.ERROR)
+        logger.log(log_level, f"业务异常: {exception.error_code.code} - {exception.message}", 
+                  extra={'trace_id': exception.trace_id, 'error_dict': error_dict})
+        
+        return JSONResponse(
+            status_code=http_status,
+            content=jsonable_encoder(result),
+            headers=headers,
+            media_type=media_type,
+            background=background,
+        )
+    
+    @classmethod
     def build_dict_response(
         cls,
         code: int = HttpStatusConstant.SUCCESS,
         msg: str = '操作成功',
         data: Optional[Any] = None,
-        success: bool = True
+        success: bool = True,
+        trace_id: Optional[str] = None
     ) -> Dict:
         """
         构建字典格式响应（用于兼容旧接口）
@@ -312,12 +383,18 @@ class ResponseUtil:
         :param msg: 响应消息
         :param data: 响应数据
         :param success: 是否成功
+        :param trace_id: 链路追踪ID
         :return: 字典格式响应
         """
-        return {
+        result = {
             "code": code,
             "msg": msg,
-            "data": data,
+            "data": data,  
             "success": success,
             "time": datetime.now()
-        } 
+        }
+        
+        if trace_id:
+            result["trace_id"] = trace_id
+            
+        return result 

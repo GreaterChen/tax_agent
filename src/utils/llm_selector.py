@@ -8,11 +8,14 @@ from typing import Dict, Any
 from config.llm_config import llm_config
 from src.utils.rate_limiter import RateLimiter
 from src.utils.token_manager import token_manager
+from src.utils.exceptions import ExceptionFactory, ErrorContext
+from src.utils.error_codes import ErrorCode
 
 logger = logging.getLogger(__name__)
 
+# 向后兼容的异常类
 class RateLimitExceededException(Exception):
-    """限流超限异常"""
+    """限流超限异常 (向后兼容)"""
     
     def __init__(self, message: str, available_models: list = None, retry_after: int = 60):
         super().__init__(message)

@@ -12,6 +12,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from langmem.short_term import SummarizationNode
 
 from src.utils.prompts import SYSTEM_PROMPT
+from src.utils.exceptions import ExceptionFactory, ErrorContext
+from src.utils.error_codes import ErrorCode
 
 logger = logging.getLogger(__name__)
 
@@ -80,9 +82,16 @@ class WorkflowManager:
                 
             except Exception as e:
                 logger.error(f"调用LLM模型时出错: {e}")
-                # 返回一个错误消息
-                error_msg = AIMessage(content="抱歉，处理您的请求时遇到了问题。")
-                return {"messages": [error_msg]}
+                # 创建业务异常
+                context = ErrorContext(
+                    operation="call_model",
+                    component="workflow_manager"
+                )
+                raise ExceptionFactory.create_business_exception(
+                    error_code=ErrorCode.LLM_ERROR,
+                    cause=e,
+                    context=context
+                )
         
         # 构建图
         from src.agent import AgentState  # 避免循环导入
@@ -178,7 +187,17 @@ class WorkflowManager:
                         
         except Exception as e:
             logger.error(f"工作流执行出错: {e}")
-            raise
+            # 创建工作流异常
+            context = ErrorContext(
+                operation="execute_workflow",
+                component="workflow_manager",
+                extra_data={"thread_id": thread_id}
+            )
+            raise ExceptionFactory.create_business_exception(
+                error_code=ErrorCode.WORKFLOW_ERROR,
+                cause=e,
+                context=context
+            )
         
         return result, ai_responses
 

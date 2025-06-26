@@ -2,6 +2,7 @@
 import asyncio
 import logging
 from typing import List, Dict, Optional, Any, TypedDict
+from .utils.logging_config import get_logger
 
 from langgraph.graph import StateGraph, MessagesState
 from langchain_core.messages import AnyMessage
@@ -21,9 +22,17 @@ from src.utils.request_tracker import request_tracker
 from src.utils.workflow_manager import workflow_manager
 from src.utils.session_processor import session_processor
 from src.utils.request_processor import request_processor
-from src.utils.exception_handler import exception_handler
 
-logger = logging.getLogger(__name__)
+# 导入新的异常系统
+from src.utils.exceptions import (
+    ExceptionFactory,
+    ErrorContext,
+    RateLimitException,
+    BaseBusinessException
+)
+from src.utils.error_codes import ErrorCode
+
+logger = get_logger(__name__)
 
 class AgentState(MessagesState):
     """Agent状态，包含消息和上下文"""
@@ -90,44 +99,76 @@ class TaxAgent:
                 "result": result if result else ["抱歉，未能获取到有效回答"],
                 "request_id": request_id,
                 "model_used": selected_llm["name"],
+                "provider": cost_info.get("provider", "unknown"),
                 "total_cost": cost_info.get("total_cost", 0),
-                "cost_breakdown": cost_info,
+                "currency": cost_info.get("currency", "CNY"),
+                
+                # 详细的token使用量信息
                 "token_usage": {
                     "input_tokens": cost_info.get("input_tokens", 0),
                     "output_tokens": cost_info.get("output_tokens", 0),
-                    "total_tokens": cost_info.get("input_tokens", 0) + cost_info.get("output_tokens", 0)
+                    "cached_tokens": cost_info.get("cached_tokens", 0),
+                    "total_tokens": cost_info.get("total_tokens", 0),
+                    "token_source": cost_info.get("token_source", "unknown")
+                },
+                
+                # 详细的成本分解信息
+                "cost_breakdown": {
+                    "input_cost": cost_info.get("input_cost", 0),
+                    "output_cost": cost_info.get("output_cost", 0),
+                    "cached_cost": cost_info.get("cached_cost", 0),
+                    "total_cost": cost_info.get("total_cost", 0),
+                    "currency": cost_info.get("currency", "CNY"),
                 },
             }
             
         except RateLimitExceededException as e:
             # 限流异常的特殊处理
-            error_response = exception_handler.handle_rate_limit_exception(e)
             request_tracker.complete_request(request_id, success=False, error_message=str(e))
             
-            return {
-                "result": error_response,
-                "request_id": request_id,
-                "model_used": None,
-                "total_cost": 0,
-                "error_type": "rate_limit",
-                "retry_after": getattr(e, 'retry_after', 60)
-            }
+            # 转换为新的异常系统
+            context = ErrorContext(
+                request_id=request_id,
+                user_id=user_id,
+                session_id=thread_id,
+                operation="tax_agent_query",
+                component="llm_selector"
+            )
+            
+            raise ExceptionFactory.create_rate_limit_exception(
+                error_code=ErrorCode.RATE_LIMIT_EXCEEDED,
+                retry_after=getattr(e, 'retry_after', 60),
+                available_models=getattr(e, 'available_models', []),
+                context=context,
+                message=str(e)
+            )
+            
+        except BaseBusinessException:
+            # 业务异常直接重新抛出
+            request_tracker.complete_request(request_id, success=False, error_message="业务异常")
+            raise
             
         except Exception as e:
             # 清理失败请求的token预留
             if 'selected_llm' in locals() and selected_llm.get("reservation_key"):
                 await request_processor.cleanup_failed_request(selected_llm)
             
-            error_response = exception_handler.handle_general_exception(e, "处理查询请求")
             request_tracker.complete_request(request_id, success=False, error_message=str(e))
             
-            return {
-                "result": error_response,
-                "request_id": request_id,
-                "model_used": None,
-                "total_cost": 0,
-                "error_type": "general"
-            }
+            # 转换为业务异常
+            context = ErrorContext(
+                request_id=request_id,
+                user_id=user_id,
+                session_id=thread_id,
+                operation="tax_agent_query",
+                component="tax_agent"
+            )
+            
+            raise ExceptionFactory.create_business_exception(
+                error_code=ErrorCode.AGENT_QUERY_FAILED,
+                cause=e,
+                context=context
+            )
 
 # 创建全局实例
 tax_agent = TaxAgent()
