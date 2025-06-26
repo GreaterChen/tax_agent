@@ -22,20 +22,20 @@ class LLMConfig:
         # qwen-plus配置 (使用ChatOpenAI兼容模式)
         if os.getenv("DASHSCOPE_API_KEY"):
             self.llm_configs.append({
-                "name": "qwen_max_latest",
+                "name": "qwen_max",
                 "llm": ChatOpenAI(
                     api_key=os.getenv("DASHSCOPE_API_KEY"),
                     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-                    model="qwen-max-latest"
+                    model="qwen-max"
                 ),
                 "provider": "qwen",
                 "priority": 1,
                 "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 "api_key": os.getenv("DASHSCOPE_API_KEY"),
-                "model_name": "qwen-max-latest",
+                "model_name": "qwen-max",
                 "input_price": 0.0024,  # 每1K tokens价格
                 "output_price": 0.0096,  # 每1K tokens价格
-                "cached_price": 0.0024,  # 命中缓存的价格
+                "cached_price": 0.00096,  # 命中缓存的价格
                 "currency": "CNY",  # 货币类型
                 "qpm_limit": 1200,
                 "tpm_limit": 1000000,

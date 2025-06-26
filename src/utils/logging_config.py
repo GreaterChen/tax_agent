@@ -139,7 +139,5 @@ def setup_root_logging():
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
     
-    root_logger.info("根日志系统已配置，使用UTF-8编码")
-
 # 在模块导入时自动配置根日志
 setup_root_logging() 

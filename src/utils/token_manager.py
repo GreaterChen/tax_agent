@@ -227,6 +227,10 @@ class TokenManager:
     def calculate_cost(self, token_usage: TokenUsage, llm_config: Dict) -> CostInfo:
         """
         根据token使用量计算成本
+        注意：
+        - input_tokens包含所有输入token
+        - 只有cache_read的token享受cached优惠价格
+        - cache_creation的token按正常input价格计算
         
         Args:
             token_usage: Token使用量
@@ -235,7 +239,11 @@ class TokenManager:
         Returns:
             CostInfo对象
         """
-        input_cost = (token_usage.input_tokens / 1000) * llm_config.get("input_price", 0)
+        # input_tokens包含cache_read，需要减去cache_read部分计算实际input成本
+        # cache_read享受优惠价格，cache_creation按正常价格
+        actual_input_tokens = token_usage.input_tokens - token_usage.cached_tokens
+        
+        input_cost = (actual_input_tokens / 1000) * llm_config.get("input_price", 0)
         output_cost = (token_usage.output_tokens / 1000) * llm_config.get("output_price", 0)
         cached_cost = (token_usage.cached_tokens / 1000) * llm_config.get("cached_price", 0)
         
@@ -301,8 +309,16 @@ class TokenManager:
             # 验证token数据有效性
             input_tokens = usage.get('input_tokens', 0)
             output_tokens = usage.get('output_tokens', 0)
-            cached_tokens = usage.get('cached_tokens', 0)
             
+            # 从input_token_details中提取cached tokens（只计算cache_read，享受优惠价格）
+            cached_tokens = 0
+            input_token_details = usage.get('input_token_details', {})
+            if input_token_details:
+                # 只计算cache_read的token（缓存命中，享受优惠价格）
+                cache_read = input_token_details.get('cache_read', 0)
+                if isinstance(cache_read, (int, float)):
+                    cached_tokens = int(cache_read)
+                    
             if input_tokens > 0 or output_tokens > 0:
                 return TokenUsage(
                     input_tokens=input_tokens,
