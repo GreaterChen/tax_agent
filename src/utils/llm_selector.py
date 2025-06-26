@@ -7,7 +7,7 @@ import logging
 from typing import Dict, Any
 from config.llm_config import llm_config
 from src.utils.rate_limiter import RateLimiter
-from src.utils.unified_token_manager import unified_token_manager
+from src.utils.token_manager import token_manager
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +41,8 @@ class LLMSelector:
         available_llms = llm_config.get_available_llms()
         
         # 使用第一个可用模型来计算token（因为大部分模型使用相同的编码器）
-        reference_model = unified_token_manager._get_model_name(available_llms[0].get("llm"))
-        request_tokens = unified_token_manager.count_tokens(question, reference_model)
+        reference_model = token_manager._get_model_name(available_llms[0].get("llm"))
+        request_tokens = token_manager.count_tokens(question, reference_model)
         
         # 按优先级尝试每个LLM
         

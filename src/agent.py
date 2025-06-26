@@ -129,42 +129,5 @@ class TaxAgent:
                 "error_type": "general"
             }
 
-    async def get_status(self) -> Dict:
-        """获取Agent状态"""
-        try:
-            # 检查是否已经在事件循环中
-            loop = asyncio.get_running_loop()
-            from src.utils.llm_selector import llm_selector
-            llm_status = await llm_selector.get_usage_status()
-        except RuntimeError:
-            # 如果没有运行中的事件循环，创建新的
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                from src.utils.llm_selector import llm_selector
-                llm_status = loop.run_until_complete(llm_selector.get_usage_status())
-            finally:
-                loop.close()
-        
-        config_status = llm_config.get_status()
-        tools_info = tools_manager.get_available_tools_info()
-        request_stats = request_tracker.get_stats()
-        
-        from src.utils.retry_manager import rate_limit_retry_manager
-        retry_stats = rate_limit_retry_manager.get_stats()
-        
-        return {
-            "agent_status": "running",
-            "llm_config": config_status,
-            "llm_usage": llm_status,
-            "tools": tools_info,
-            "request_statistics": request_stats,
-            "retry_statistics": retry_stats
-        }
-
-    def get_failed_requests(self, limit: int = 20) -> List[Dict]:
-        """获取失败请求历史"""
-        return request_tracker.get_failed_requests(limit)
-
 # 创建全局实例
 tax_agent = TaxAgent()

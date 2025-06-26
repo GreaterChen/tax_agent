@@ -81,29 +81,6 @@ async def query(question: Question):
             data=None
         )
 
-@app.get("/health")
-async def health_check():
-    """健康检查接口"""
-    return ResponseUtil.success(
-        msg="服务运行正常",
-        data={"status": "healthy", "service": "税务问答系统"}
-    )
-
-@app.get("/status")
-async def get_llm_status():
-    """获取LLM系统状态"""
-    try:
-        status = await tax_agent.get_status()
-        return ResponseUtil.success(
-            msg="获取状态成功",
-            data=status
-        )
-    except Exception as e:
-        return ResponseUtil.error(
-            msg=f"获取状态时发生错误: {str(e)}",
-            data=None
-        )
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000) 

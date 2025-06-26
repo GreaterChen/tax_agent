@@ -42,15 +42,15 @@
 - `handle_rate_limit_exception()` - 限流异常处理
 - `handle_general_exception()` - 通用异常处理
 
-### 5. **unified_token_manager.py** - 统一Token管理器
+### 5. **token_manager.py** - 统一Token管理器
 **职责**: 所有Token相关的计算和管理
 - `calculate_token_usage()` - 统一Token计算（API优先）
 - `calculate_cost()` - 成本计算
 - `TokenUsage` & `CostInfo` 数据类
 
 ## 🚫 已删除的冗余文件
-- ❌ `enhanced_token_extractor.py` - 功能集成到unified_token_manager
-- ❌ `token_counter.py` - 功能集成到unified_token_manager
+- ❌ `enhanced_token_extractor.py` - 功能集成到token_manager
+- ❌ `token_counter.py` - 功能集成到token_manager
 
 ## 📊 重构效果
 

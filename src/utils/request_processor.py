@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage
 from src.utils.llm_selector import llm_selector, RateLimitExceededException
 from src.utils.request_tracker import request_tracker
 from src.utils.retry_manager import rate_limit_retry_manager
-from src.utils.unified_token_manager import unified_token_manager
+from src.utils.token_manager import token_manager
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class RequestProcessor:
             # 优先使用API响应中的token信息
             api_response = ai_responses[-1] if ai_responses else None
             
-            token_usage = unified_token_manager.calculate_token_usage(
+            token_usage = token_manager.calculate_token_usage(
                 request_text=request_text,
                 response_text=combined_response,
                 llm_instance=llm_instance,
@@ -62,7 +62,7 @@ class RequestProcessor:
             )
             
             # 计算成本
-            cost_info = unified_token_manager.calculate_cost(token_usage, llm_info)
+            cost_info = token_manager.calculate_cost(token_usage, llm_info)
             
             # 转换为传统格式以保持兼容性
             result = {

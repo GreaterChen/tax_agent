@@ -132,7 +132,7 @@ class LLMConfig:
             return {"error": f"未找到LLM配置: {llm_name}"}
         
         # 使用统一Token管理器计算成本
-        from src.utils.unified_token_manager import unified_token_manager, TokenUsage
+        from src.utils.token_manager import token_manager, TokenUsage
         
         token_usage = TokenUsage(
             input_tokens=input_tokens,
@@ -141,7 +141,7 @@ class LLMConfig:
             source="config_calculation"
         )
         
-        cost_info = unified_token_manager.calculate_cost(token_usage, llm_config)
+        cost_info = token_manager.calculate_cost(token_usage, llm_config)
         
         # 转换为传统格式
         return {

@@ -50,7 +50,7 @@ class CostInfo:
         if self.total_cost == 0:
             self.total_cost = self.input_cost + self.output_cost + self.cached_cost
 
-class UnifiedTokenManager:
+class TokenManager:
     """统一Token管理器"""
     
     # 模型编码器和限制配置
@@ -412,4 +412,4 @@ class UnifiedTokenManager:
         return chinese_chars + max(other_chars // 4, 1)
 
 # 全局实例
-unified_token_manager = UnifiedTokenManager() 
+token_manager = TokenManager() 
