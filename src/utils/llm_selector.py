@@ -74,7 +74,7 @@ class LLMSelector:
                     llm_name,
                     estimated_request_tokens=request_tokens,
                     tpm_limit=llm_config_item["tpm_limit"],
-                    response_multiplier=3.0  # 预估回复是请求的3倍长度
+                    response_multiplier=0.8  # 预估回复是请求的0.8倍长度
                 )
                 
                 if token_reserved:

@@ -121,8 +121,8 @@ class ResponseUtil:
         """
         result = {'code': HttpStatusConstant.WARN, 'msg': msg}
 
-        if data is not None:
-            result['data'] = data
+        # 始终包含data字段，如果没有提供则为空字典
+        result['data'] = data if data is not None else {}
         if rows is not None:
             result['rows'] = rows
         if dict_content is not None:
@@ -167,8 +167,8 @@ class ResponseUtil:
         """
         result = {'code': HttpStatusConstant.ERROR, 'msg': msg}
 
-        if data is not None:
-            result['data'] = data
+        # 始终包含data字段，如果没有提供则为空字典
+        result['data'] = data if data is not None else {}
         if rows is not None:
             result['rows'] = rows
         if dict_content is not None:
@@ -213,8 +213,8 @@ class ResponseUtil:
         """
         result = {'code': HttpStatusConstant.UNAUTHORIZED, 'msg': msg}
 
-        if data is not None:
-            result['data'] = data
+        # 始终包含data字段，如果没有提供则为空字典
+        result['data'] = data if data is not None else {}
         if rows is not None:
             result['rows'] = rows
         if dict_content is not None:
@@ -259,8 +259,8 @@ class ResponseUtil:
         """
         result = {'code': HttpStatusConstant.FORBIDDEN, 'msg': msg}
 
-        if data is not None:
-            result['data'] = data
+        # 始终包含data字段，如果没有提供则为空字典
+        result['data'] = data if data is not None else {}
         if rows is not None:
             result['rows'] = rows
         if dict_content is not None:
@@ -333,6 +333,7 @@ class ResponseUtil:
         result = {
             'code': exception.error_code.code,
             'msg': exception.user_message,  # 用户友好的错误信息
+            'data': {},  # 始终包含data字段，异常情况下为空字典
             'success': False,
             'time': datetime.now(),
             'trace_id': exception.trace_id,

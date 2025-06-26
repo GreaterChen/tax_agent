@@ -22,7 +22,7 @@ class LLMConfig:
         # qwen-plus配置 (使用ChatOpenAI兼容模式)
         if os.getenv("DASHSCOPE_API_KEY"):
             self.llm_configs.append({
-                "name": "qwen_max",
+                "name": "qwen-max",
                 "llm": ChatOpenAI(
                     api_key=os.getenv("DASHSCOPE_API_KEY"),
                     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -33,6 +33,30 @@ class LLMConfig:
                 "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 "api_key": os.getenv("DASHSCOPE_API_KEY"),
                 "model_name": "qwen-max",
+                "input_price": 0.0024,  # 每1K tokens价格
+                "output_price": 0.0096,  # 每1K tokens价格
+                "cached_price": 0.00096,  # 命中缓存的价格
+                "currency": "CNY",  # 货币类型
+                "qpm_limit": 1200,
+                "tpm_limit": 1000000,
+                "max_context_tokens": 10000,  # 最大上下文token数
+                "summary_trigger_tokens": 8000,  # 触发总结的token阈值
+                "max_summary_tokens": 600,  # 总结最大token数
+                "enabled": True
+            })
+
+            self.llm_configs.append({
+                "name": "qwen-max-latest",
+                "llm": ChatOpenAI(
+                    api_key=os.getenv("DASHSCOPE_API_KEY"),
+                    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    model="qwen-max-latest"
+                ),
+                "provider": "qwen",
+                "priority": 2,
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "api_key": os.getenv("DASHSCOPE_API_KEY"),
+                "model_name": "qwen-max-latest",
                 "input_price": 0.0024,  # 每1K tokens价格
                 "output_price": 0.0096,  # 每1K tokens价格
                 "cached_price": 0.00096,  # 命中缓存的价格

@@ -185,7 +185,7 @@ class RateLimitRetryManager(RetryManager):
         config = RetryConfig(
             max_retries=5,  # 限流重试次数可以多一些
             base_delay=5.0,  # 限流基础延迟较长
-            max_delay=300.0,  # 最大延迟5分钟
+            max_delay=100.0,  # 最大延迟100秒
             strategy=RetryStrategy.JITTERED_EXPONENTIAL,
             backoff_multiplier=1.5,  # 较温和的退避倍数
             jitter_range=0.2  # 更大的抖动范围避免雷群效应
