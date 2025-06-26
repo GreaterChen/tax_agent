@@ -7,7 +7,7 @@ import logging
 from typing import Dict, Any
 from config.llm_config import llm_config
 from src.utils.rate_limiter import RateLimiter
-from src.utils.token_counter import TokenCounter
+from src.utils.unified_token_manager import unified_token_manager
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,6 @@ class LLMSelector:
     
     def __init__(self):
         self.rate_limiter = RateLimiter()
-        self.token_counter = TokenCounter()
         logger.info("LLM选择器初始化完成，限流功能已启用")
     
     async def select_best_llm(self, question: str) -> Dict[str, Any]:
@@ -42,8 +41,8 @@ class LLMSelector:
         available_llms = llm_config.get_available_llms()
         
         # 使用第一个可用模型来计算token（因为大部分模型使用相同的编码器）
-        reference_model = self._get_reference_model_name(available_llms[0])
-        request_tokens = self.token_counter.count_tokens(question, reference_model)
+        reference_model = unified_token_manager._get_model_name(available_llms[0].get("llm"))
+        request_tokens = unified_token_manager.count_tokens(question, reference_model)
         
         # 按优先级尝试每个LLM
         
@@ -117,25 +116,7 @@ class LLMSelector:
         except Exception as e:
             logger.error(f"回滚QPM计数失败: {e}")
     
-    def _get_reference_model_name(self, llm_config_item: Dict[str, Any]) -> str:
-        """
-        从LLM配置中提取模型名称用于token计算
-        
-        Args:
-            llm_config_item: LLM配置项
-            
-        Returns:
-            模型名称字符串
-        """
-        # 尝试从配置中获取模型名称
-        llm = llm_config_item.get("llm")
-        if hasattr(llm, "model_name"):
-            return llm.model_name
-        elif hasattr(llm, "model"):
-            return llm.model
-        else:
-            # 回退到默认模型（大部分模型使用相同的编码器）
-            return "gpt-4o-mini"
+
     
     def disable_llm(self, llm_name: str):
         """临时禁用指定的LLM"""

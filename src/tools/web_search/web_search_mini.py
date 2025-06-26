@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
-from langchain_community.chat_models import ChatZhipuAI, ChatTongyi
+from langchain_community.chat_models import ChatTongyi
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, quote_plus
 import re

@@ -1,348 +1,170 @@
 """税务问答Agent实现 - 核心调用模块"""
 import asyncio
-import time
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any, TypedDict
 
-from langgraph.prebuilt import create_react_agent, ToolNode, tools_condition
-from langchain_core.messages import AIMessage, HumanMessage
-from langgraph.graph import StateGraph, MessagesState, END
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import StateGraph, MessagesState
+from langchain_core.messages import AnyMessage
+
+# 修补 typing 模块以支持 Python < 3.11
+import typing
+if not hasattr(typing, 'NotRequired'):
+    from typing_extensions import NotRequired
+    typing.NotRequired = NotRequired
 
 from config.llm_config import llm_config
-from src.utils.llm_selector import llm_selector, RateLimitExceededException
+from src.utils.llm_selector import RateLimitExceededException
 from src.utils.tools_manager import tools_manager
-from src.utils.prompts import SYSTEM_PROMPT, create_enhanced_question, create_non_rag_question
+from src.utils.request_tracker import request_tracker
+
+# 导入专门的管理器
+from src.utils.workflow_manager import workflow_manager
+from src.utils.session_processor import session_processor
+from src.utils.request_processor import request_processor
+from src.utils.exception_handler import exception_handler
 
 logger = logging.getLogger(__name__)
+
+class AgentState(MessagesState):
+    """Agent状态，包含消息和上下文"""
+    context: dict[str, Any]
+
+class LLMInputState(TypedDict):
+    """LLM输入状态"""
+    summarized_messages: list[AnyMessage]
+    context: dict[str, Any]
 
 class TaxAgent:
     """税务问答Agent - 核心调用类"""
     
     def __init__(self):
-        self.memory = MemorySaver()
         logger.info("TaxAgent初始化完成")
-    
-    def _create_graph(self, tools: List, llm_config_item: Dict) -> StateGraph:
-        """根据工具列表和LLM配置创建图"""
-        # 动态绑定工具到选定的LLM
-        llm_with_tools = llm_config_item["llm"].bind_tools(tools)
-        tool_node = ToolNode(tools)
-        
-        # 创建代理
-        agent = create_react_agent(
-            model=llm_with_tools,
-            tools=tools,
-            prompt=SYSTEM_PROMPT
-        )
-        
-        builder = StateGraph(MessagesState)
-        builder.add_node("agent", agent)
-        builder.add_node("tools", tool_node)
-
-        builder.set_entry_point("agent")
-        builder.add_conditional_edges(
-            "agent",
-            tools_condition,
-            {
-                "tools": "tools",
-                "__end__": END,
-            }
-        )
-        builder.add_edge("tools", "agent")
-        return builder.compile(checkpointer=self.memory)
 
     async def query(self, question: str, thread_id: Optional[str] = None, 
               web_search: bool = True, session_files: Optional[List[str]] = None, 
-              enable_rag: bool = True) -> List[str]:
-        """执行查询 - 主要入口方法"""
+              enable_rag: bool = True, user_id: Optional[str] = None) -> Dict[str, any]:
+        """执行查询 - 主要入口方法，返回包含结果和成本信息的字典"""
+        
+        # 开始请求追踪
+        request_id = request_tracker.start_request(question, user_id, thread_id)
+        
         try:
-            # 处理会话文档和问题增强
-            enhanced_question, session_vector_tool = self._process_session_files(
+            # 1. 处理会话文档和问题增强
+            enhanced_question, session_vector_tool = session_processor.process_session_files(
                 question, session_files, enable_rag, thread_id
             )
             
-            # 获取工具列表
+            # 2. 获取工具列表
             tools = tools_manager.get_tools(
                 web_search=web_search,
                 session_vector_tool=session_vector_tool
             )
             
-            # 智能选择LLM
-            selected_llm = await self._select_llm_with_retry(enhanced_question)
-            
-            # 创建工作流并执行
-            workflow = self._create_graph(tools, selected_llm)
-            result = await self._execute_workflow(workflow, enhanced_question, thread_id)
-            
-            return result if result else ["抱歉，未能获取到有效回答"]
-            
-        except Exception as e:
-            # 检查是否是限流异常
-            if self._is_rate_limit_exception(e):
-                return self._handle_rate_limit_exception(e)
-            
-            logger.error(f"查询失败: {e}")
-            return [f"抱歉，处理您的请求时发生错误: {str(e)}"]
-    
-    def _process_session_files(self, question: str, session_files: Optional[List[str]], 
-                             enable_rag: bool, thread_id: str) -> tuple:
-        """处理会话文件和问题增强"""
-        session_vector_tool = None
-        enhanced_question = question
-        
-        if session_files and len(session_files) > 0:
-            if enable_rag:
-                # RAG模式：创建会话级向量搜索工具
-                session_vector_tool = tools_manager.create_session_vector_tool(session_files, thread_id)
-                enhanced_question = create_enhanced_question(question, session_files)
-            else:
-                # 非RAG模式：直接读取文件内容
-                try:
-                    from src.utils.file_utils import read_session_files_content
-                    file_contents = read_session_files_content(session_files)
-                    if file_contents:
-                        enhanced_question = create_non_rag_question(question, file_contents)
-                except ImportError:
-                    logger.warning("file_utils模块不可用，跳过文件内容读取")
-        
-        return enhanced_question, session_vector_tool
-    
-    async def _select_llm_with_retry(self, enhanced_question: str) -> Dict:
-        """选择LLM（异步处理）"""
-        try:
-            # 检查是否已经在事件循环中
-            loop = asyncio.get_running_loop()
-            return await llm_selector.select_best_llm(enhanced_question)
-        except RuntimeError:
-            # 如果没有运行中的事件循环，创建新的
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(llm_selector.select_best_llm(enhanced_question))
-            finally:
-                loop.close()
-    
-    async def _execute_workflow(self, workflow, enhanced_question: str, thread_id: str) -> List[str]:
-        """执行工作流，支持重试机制和完整TPM统计"""
-        messages = [HumanMessage(content=enhanced_question)]
-        config = {
-            "configurable": {
-                "thread_id": thread_id or "default"
-            },
-            "recursion_limit": 10
-        }
-        
-        result = []
-        max_retries = 3
-        selected_llm_info = None  # 记录选择的LLM信息
-        
-        for retry in range(max_retries):
-            try:
-                # 重新选择LLM（每次重试都重新选择）
-                selected_llm_info = await self._select_llm_with_retry(enhanced_question)
-                tools = tools_manager.get_tools(web_search=True)
-                workflow = self._create_graph(tools, selected_llm_info)
-                
-                # 记录实际回复内容用于token统计
-                all_responses = []
-                
-                for step in workflow.stream({"messages": messages}, config=config, stream_mode="updates"):
-                    if "agent" in step and "messages" in step['agent']:
-                        last_msg = step['agent']['messages'][-1]
-                        if isinstance(last_msg, AIMessage) and last_msg.content:
-                            result.append(last_msg.content)
-                            all_responses.append(last_msg.content)
-                
-                # 如果成功获得回复，进行完整的TPM统计
-                if result and selected_llm_info:
-                    await self._finalize_token_usage(selected_llm_info, enhanced_question, all_responses)
-                
-                # 如果成功，跳出重试循环
-                if result:
-                    break
-                    
-            except Exception as e:
-                error_msg = str(e).lower()
-                if "rate limit" in error_msg or "quota" in error_msg:
-                    # 限流错误处理
-                    self._handle_rate_limit_error(enhanced_question, retry, max_retries)
-                    if retry < max_retries - 1:
-                        time.sleep(2 ** retry)  # 指数退避
-                    else:
-                        # 最后一次重试失败，也需要清理token预留
-                        if selected_llm_info:
-                            await self._cleanup_failed_request(selected_llm_info)
-                        raise e
-                else:
-                    # 非限流错误，清理token预留并直接抛出
-                    if selected_llm_info:
-                        await self._cleanup_failed_request(selected_llm_info)
-                    raise e
-        
-        return result
-
-    async def _finalize_token_usage(self, llm_info: Dict, request_text: str, responses: List[str]):
-        """完成完整的TPM统计"""
-        try:
-            from src.utils.token_counter import TokenCounter
-            token_counter = TokenCounter()
-            
-            llm_name = llm_info["name"]
-            reservation_key = llm_info.get("reservation_key")
-            
-            if not reservation_key:
-                logger.warning(f"未找到{llm_name}的token预留信息，跳过TPM最终确定")
-                return
-            
-            # 计算实际token使用量
-            reference_model = self._get_reference_model_name(llm_info)
-            actual_request_tokens = token_counter.count_tokens(request_text, reference_model)
-            
-            # 计算所有回复的token总数
-            actual_response_tokens = 0
-            for response in responses:
-                actual_response_tokens += token_counter.count_tokens(response, reference_model)
-            
-            # 最终确定token使用量
-            finalize_result = await llm_selector.rate_limiter.finalize_token_usage(
-                llm_name,
-                reservation_key,
-                actual_request_tokens,
-                actual_response_tokens
+            # 3. 使用重试机制选择LLM
+            selected_llm = await request_processor.select_llm_with_retry_mechanism(
+                enhanced_question, request_id
             )
             
-            # 记录详细的使用统计
-            total_actual_tokens = actual_request_tokens + actual_response_tokens
-            estimated_tokens = llm_info.get("estimated_total_tokens", 0)
+            # 4. 更新请求追踪中的模型信息
+            request_tracker.update_model_selection(request_id, selected_llm["name"])
             
-            logger.info(f"TPM统计完成 - {llm_name}: "
-                       f"请求Token={actual_request_tokens}, "
-                       f"回复Token={actual_response_tokens}, "
-                       f"总计={total_actual_tokens}, "
-                       f"预估={estimated_tokens}, "
-                       f"效率={finalize_result.get('efficiency', 'N/A')}")
+            # 5. 创建工作流并执行
+            workflow = workflow_manager.create_graph_with_summary(tools, selected_llm)
+            result, ai_responses = await workflow_manager.execute_workflow_with_tracking(
+                workflow, enhanced_question, thread_id
+            )
+            
+            # 6. 计算成本
+            cost_info = await request_processor.calculate_costs(
+                selected_llm, enhanced_question, result, ai_responses, request_id
+            )
+            
+            # 7. 更新成本信息
+            request_tracker.update_cost(request_id, cost_info.get("total_cost", 0))
+            
+            # 8. 完成请求追踪
+            request_tracker.complete_request(request_id, success=True)
+            
+            # 9. 返回完整结果
+            return {
+                "result": result if result else ["抱歉，未能获取到有效回答"],
+                "request_id": request_id,
+                "model_used": selected_llm["name"],
+                "total_cost": cost_info.get("total_cost", 0),
+                "cost_breakdown": cost_info,
+                "token_usage": {
+                    "input_tokens": cost_info.get("input_tokens", 0),
+                    "output_tokens": cost_info.get("output_tokens", 0),
+                    "total_tokens": cost_info.get("input_tokens", 0) + cost_info.get("output_tokens", 0)
+                },
+            }
+            
+        except RateLimitExceededException as e:
+            # 限流异常的特殊处理
+            error_response = exception_handler.handle_rate_limit_exception(e)
+            request_tracker.complete_request(request_id, success=False, error_message=str(e))
+            
+            return {
+                "result": error_response,
+                "request_id": request_id,
+                "model_used": None,
+                "total_cost": 0,
+                "error_type": "rate_limit",
+                "retry_after": getattr(e, 'retry_after', 60)
+            }
             
         except Exception as e:
-            logger.error(f"TPM最终统计失败: {e}")
-
-    async def _cleanup_failed_request(self, llm_info: Dict):
-        """清理失败请求的token预留"""
-        try:
-            llm_name = llm_info["name"]
-            reservation_key = llm_info.get("reservation_key")
+            # 清理失败请求的token预留
+            if 'selected_llm' in locals() and selected_llm.get("reservation_key"):
+                await request_processor.cleanup_failed_request(selected_llm)
             
-            if reservation_key:
-                # 清理预留的token（设置实际使用为0）
-                await llm_selector.rate_limiter.finalize_token_usage(
-                    llm_name, reservation_key, 0, 0
-                )
-                logger.info(f"已清理{llm_name}的失败请求token预留")
-                
-        except Exception as e:
-            logger.error(f"清理失败请求token预留时出错: {e}")
+            error_response = exception_handler.handle_general_exception(e, "处理查询请求")
+            request_tracker.complete_request(request_id, success=False, error_message=str(e))
+            
+            return {
+                "result": error_response,
+                "request_id": request_id,
+                "model_used": None,
+                "total_cost": 0,
+                "error_type": "general"
+            }
 
-    def _get_reference_model_name(self, llm_info: Dict) -> str:
-        """从LLM配置中提取模型名称用于token计算"""
-        llm = llm_info.get("llm")
-        if hasattr(llm, "model_name"):
-            return llm.model_name
-        elif hasattr(llm, "model"):
-            return llm.model
-        else:
-            return "gpt-4o-mini"  # 默认模型
-    
-    def _handle_rate_limit_error(self, enhanced_question: str, retry: int, max_retries: int):
-        """处理限流错误"""
-        logger.warning(f"触发限流错误，第 {retry + 1}/{max_retries} 次重试")
-        # 这里可以添加更多的错误处理逻辑，比如通知相关模块等
-    
     async def get_status(self) -> Dict:
         """获取Agent状态"""
         try:
             # 检查是否已经在事件循环中
             loop = asyncio.get_running_loop()
+            from src.utils.llm_selector import llm_selector
             llm_status = await llm_selector.get_usage_status()
         except RuntimeError:
             # 如果没有运行中的事件循环，创建新的
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
+                from src.utils.llm_selector import llm_selector
                 llm_status = loop.run_until_complete(llm_selector.get_usage_status())
             finally:
                 loop.close()
         
         config_status = llm_config.get_status()
         tools_info = tools_manager.get_available_tools_info()
+        request_stats = request_tracker.get_stats()
+        
+        from src.utils.retry_manager import rate_limit_retry_manager
+        retry_stats = rate_limit_retry_manager.get_stats()
         
         return {
             "agent_status": "running",
             "llm_config": config_status,
             "llm_usage": llm_status,
-            "tools": tools_info
+            "tools": tools_info,
+            "request_statistics": request_stats,
+            "retry_statistics": retry_stats
         }
 
-    def _is_rate_limit_exception(self, exception: Exception) -> bool:
-        """判断是否为限流相关异常"""
-        error_msg = str(exception).lower()
-        exception_name = exception.__class__.__name__
-        
-        # 检查异常类型和错误信息
-        rate_limit_indicators = [
-            "ratelimitexceededexception",
-            "rate limit",
-            "quota",
-            "限流",
-            "请求高峰",
-            "达到限制"
-        ]
-        
-        return (exception_name.lower() == "ratelimitexceededexception" or 
-                any(indicator in error_msg for indicator in rate_limit_indicators))
-
-    def _handle_rate_limit_exception(self, exception: Exception) -> List[str]:
-        """处理限流异常，返回友好的用户提示"""
-        try:
-            # 尝试获取异常的详细信息
-            if hasattr(exception, 'retry_after'):
-                retry_after = exception.retry_after
-            else:
-                retry_after = 60  # 默认重试时间
-                
-            if hasattr(exception, 'available_models'):
-                models_info = f"涉及模型: {', '.join(exception.available_models)}"
-            else:
-                models_info = ""
-            
-            # 生成友好的错误消息
-            base_message = "🚫 系统目前处于请求高峰期，所有AI模型都已达到使用限制。"
-            
-            retry_message = f"⏰ 建议 {retry_after} 秒后重试，或选择非高峰时段使用。"
-            
-            tips = [
-                "💡 使用建议:",
-                "• 尝试简化您的问题以减少处理时间",
-                "• 避免在高峰时段(工作日9-18点)发起复杂查询", 
-                "• 如有紧急需求，请联系系统管理员"
-            ]
-            
-            result = [base_message, retry_message]
-            result.extend(tips)
-            
-            if models_info:
-                result.append(f"📊 {models_info}")
-                
-            # 记录限流日志用于监控
-            logger.warning(f"用户请求被限流拒绝: {exception}, 建议重试时间: {retry_after}秒")
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"处理限流异常时出错: {e}")
-            return [
-                "🚫 系统目前处于请求高峰期，请稍后再试。",
-                "⏰ 建议1分钟后重试，感谢您的理解。"
-            ]
+    def get_failed_requests(self, limit: int = 20) -> List[Dict]:
+        """获取失败请求历史"""
+        return request_tracker.get_failed_requests(limit)
 
 # 创建全局实例
 tax_agent = TaxAgent()

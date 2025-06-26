@@ -12,6 +12,7 @@ load_dotenv()
 
 from src.agent import tax_agent
 from src.scheduler.news_crawler import NewsCrawler
+from utils.response_util import ResponseUtil
 
 # 创建爬虫实例
 crawler = NewsCrawler(os.getenv("DATABASE_URL"))
@@ -47,7 +48,7 @@ class Answer(BaseModel):
     answers: List[str]
     thread_id: str
 
-@app.post("/query", response_model=Answer)
+@app.post("/query")
 async def query(question: Question):
     """处理问答请求
     
@@ -55,7 +56,7 @@ async def query(question: Question):
         question: 包含问题文本和线程ID的请求体
         
     Returns:
-        Answer: 包含回答列表和线程ID的响应
+        统一格式的响应
     """
     try:
         # 使用提供的thread_id或生成新的uuid
@@ -63,23 +64,44 @@ async def query(question: Question):
         
         answers = await tax_agent.query(question.text, thread_id, question.web_search, 
                                   question.session_files, question.enable_rag)
-        return Answer(answers=answers, thread_id=thread_id)
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"处理请求时发生错误: {str(e)}"
+        
+        # 构建响应数据
+        response_data = {
+            "answers": answers,
+            "thread_id": thread_id
+        }
+        
+        return ResponseUtil.success(
+            msg="查询成功",
+            data=response_data
         )
+    except Exception as e:
+        return ResponseUtil.error(
+            msg=f"处理请求时发生错误: {str(e)}",
+            data=None
+        )
+
+@app.get("/health")
+async def health_check():
+    """健康检查接口"""
+    return ResponseUtil.success(
+        msg="服务运行正常",
+        data={"status": "healthy", "service": "税务问答系统"}
+    )
 
 @app.get("/status")
 async def get_llm_status():
     """获取LLM系统状态"""
     try:
         status = await tax_agent.get_status()
-        return status
+        return ResponseUtil.success(
+            msg="获取状态成功",
+            data=status
+        )
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"获取状态时发生错误: {str(e)}"
+        return ResponseUtil.error(
+            msg=f"获取状态时发生错误: {str(e)}",
+            data=None
         )
 
 if __name__ == "__main__":

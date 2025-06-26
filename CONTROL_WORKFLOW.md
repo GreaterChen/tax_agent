@@ -272,54 +272,115 @@ graph TD
 
 ```mermaid
 graph TD
-    A["用户请求到达"] --> B["TaxAgent.query()"]
-    B --> C["处理会话文件和问题增强"]
-    C --> D["获取工具列表"]
-    D --> E["开始LLM选择流程"]
+    A["🔥 用户发起请求"] --> B["📊 TaxAgent.query()"]
+    B --> C["🆔 开始请求追踪<br/>(生成request_id)"]
+    C --> D["📁 处理会话文件<br/>_process_session_files()"]
     
-    subgraph "LLM选择阶段"
-        E --> F["计算请求Token数"]
-        F --> G["遍历LLM优先级列表"]
-        G --> H["QPM检查"]
-        H --> I["TPM预留"]
-        I --> J{选择成功?}
-        J -->|是| K["✅ 获得LLM配置+预留"]
-        J -->|否| L["🚫 抛出RateLimitExceededException"]
+    subgraph "文件处理流程"
+        D --> D1{有会话文件?}
+        D1 -->|是| D2{启用RAG?}
+        D2 -->|是| D3["创建会话向量搜索工具<br/>增强问题"]
+        D2 -->|否| D4["直接读取文件内容<br/>拼接到问题"]
+        D1 -->|否| D5["使用原始问题"]
+        D3 --> E
+        D4 --> E
+        D5 --> E
     end
     
-    subgraph "正常执行路径"
-        K --> M["创建LangGraph工作流"]
-        M --> N["执行多轮对话"]
-        N --> O["收集AI回复内容"]
-        O --> P["计算实际Token使用量"]
-        P --> Q["最终确定TPM统计"]
-        Q --> R["记录详细日志"]
-        R --> S["✅ 返回成功结果"]
+    E["🛠️ 获取工具列表<br/>tools_manager.get_tools()"] --> F["🔄 重试机制选择LLM<br/>_select_llm_with_retry_mechanism()"]
+    
+    subgraph "LLM选择与重试机制"
+        F --> F1["RateLimitRetryManager"]
+        F1 --> F2["调用llm_selector.select_best_llm()"]
+        F2 --> F3["遍历优先级LLM列表"]
+        F3 --> F4["检查QPM限制<br/>(滑动窗口)"]
+        F4 --> F5{QPM通过?}
+        F5 -->|否| F6["跳过此LLM"]
+        F5 -->|是| F7["预留TPM资源<br/>(估算总token×3倍)"]
+        F7 --> F8{TPM预留成功?}
+        F8 -->|否| F6
+        F8 -->|是| F9["✅ 选择成功"]
+        F6 --> F10{还有其他LLM?}
+        F10 -->|是| F3
+        F10 -->|否| F11["🚫 全部限流"]
+        F11 --> F12["抛出RateLimitExceededException"]
+        F12 --> F13["退避算法等待<br/>(指数退避+抖动)"]
+        F13 --> F14["重试LLM选择"]
+        F14 --> F1
+        F9 --> G
     end
     
-    subgraph "限流拒绝路径"
-        L --> T["Agent捕获限流异常"]
-        T --> U["检查异常类型"]
-        U --> V["生成友好错误消息"]
-        V --> W["🚫 系统处于高峰期提示"]
-        W --> X["⏰ 建议重试时间"]
-        X --> Y["💡 使用建议和技巧"]
-        Y --> Z["📊 涉及模型信息"]
-        Z --> AA["🚫 返回拒绝消息"]
+    G["📈 更新请求追踪模型信息"] --> H["🏗️ 创建LangGraph工作流<br/>_create_graph_with_summary()"]
+    
+    subgraph "工作流创建"
+        H --> H1["从LLM配置读取阈值"]
+        H1 --> H2["max_context_tokens<br/>summary_trigger_tokens<br/>max_summary_tokens"]
+        H2 --> H3{SummarizationNode可用?}
+        H3 -->|是| H4["创建SummarizationNode<br/>配置总结参数"]
+        H3 -->|否| H5["跳过总结功能"]
+        H4 --> H6["构建图: START → summarize → call_model → tools"]
+        H5 --> H7["构建图: START → call_model → tools"]
+        H6 --> I
+        H7 --> I
     end
     
-    subgraph "执行失败处理"
-        BB["LLM调用失败"] --> CC["清理Token预留"]
-        CC --> DD["记录失败日志"]
-        DD --> EE{是限流错误?}
-        EE -->|是| FF["重试机制(最多3次)"]
-        EE -->|否| GG["返回通用错误"]
-        FF --> H
+    I["⚡ 执行工作流<br/>_execute_workflow_with_tracking()"] --> J["准备初始状态<br/>{messages, context}"]
+    
+    subgraph "工作流执行"
+        J --> J1["开始流式处理"]
+        J1 --> J2{需要消息总结?}
+        J2 -->|是| J3["SummarizationNode处理<br/>检查token数量"]
+        J3 --> J4["生成历史消息总结<br/>节省上下文空间"]
+        J4 --> J5["使用总结+当前问题"]
+        J2 -->|否| J6["直接使用当前问题"]
+        J5 --> J7["call_model节点<br/>调用LLM生成回复"]
+        J6 --> J7
+        J7 --> J8{需要工具调用?}
+        J8 -->|是| J9["tools节点<br/>执行工具函数"]
+        J9 --> J10["收集工具结果"]
+        J10 --> J7
+        J8 -->|否| J11["收集AI最终回复"]
     end
     
-    subgraph "监控和日志"
-        HH["所有路径"] --> II["记录性能指标"]
-        II --> JJ["更新使用统计"]
-        JJ --> KK["限流监控告警"]
+    J11 --> K["💰 计算成本信息<br/>_calculate_costs()"]
+    
+    subgraph "成本计算与TPM确定"
+        K --> K1["TokenCounter计算实际token"]
+        K1 --> K2["输入token + 输出token"]
+        K2 --> K3["根据模型定价计算成本<br/>input_price × 输入token<br/>output_price × 输出token"]
+        K3 --> K4["更新请求追踪token信息"]
+        K4 --> K5["TPM最终确定<br/>_finalize_token_usage()"]
+        K5 --> K6["计算预估vs实际效率"]
+        K6 --> K7["清理token预留"]
+    end
+    
+    K7 --> L["📊 更新请求追踪成本"] --> M["✅ 完成请求追踪"] --> N["📤 返回统一格式结果"]
+    
+    subgraph "返回结果格式"
+        N --> N1["result: AI回复内容"]
+        N1 --> N2["request_id: 追踪标识"]
+        N2 --> N3["model_used: 使用的模型"]
+        N3 --> N4["total_cost: 总成本"]
+        N4 --> N5["cost_breakdown: 成本详情"]
+        N5 --> N6["token_usage: Token使用统计"]
+        N6 --> N7["currency: 货币类型"]
+    end
+    
+    subgraph "异常处理流程"
+        O1["🚫 RateLimitExceededException"] --> O2["生成友好错误提示<br/>建议重试时间"]
+        O3["❌ 一般异常"] --> O4["记录错误日志<br/>返回通用错误信息"]
+        O2 --> O5["返回限流错误格式"]
+        O4 --> O6["返回一般错误格式"]
+    end
+    
+    subgraph "监控与统计"
+        P1["📈 RequestTracker"] --> P2["记录请求生命周期<br/>成本统计<br/>失败分析"]
+        P3["🔄 RetryManager"] --> P4["重试次数统计<br/>成功率分析<br/>退避算法监控"]
+        P5["⚡ RateLimiter"] --> P6["QPM/TPM实时监控<br/>Redis滑动窗口<br/>分布式限流"]
+    end
+    
+    subgraph "配置管理"
+        Q1["⚙️ LLMConfig"] --> Q2["模型配置集中管理<br/>定价信息<br/>阈值参数"]
+        Q3["🛠️ ToolsManager"] --> Q4["工具动态加载<br/>会话向量搜索<br/>网络搜索"]
     end
 ```
