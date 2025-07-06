@@ -19,7 +19,7 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 
 from .token_manager import token_manager
-from config.file_config import TOKEN_LIMITS, SUMMARY_CONFIG, FILE_STORAGE_CONFIG
+from config.file_config import FILE_PROCESSING_CONFIG
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -169,16 +169,17 @@ class AsyncSummarizer:
             # 导入LLM配置
             from config.llm_config import llm_config
             
-            # 获取适合总结的LLM
-            suitable_llm = llm_config.get_llm_by_name("qwen-max-latest")
+            # 获取指定的总结LLM
+            summary_llm_name = FILE_PROCESSING_CONFIG["summary"]["llm_name"]
+            suitable_llm = llm_config.get_llm_by_name(summary_llm_name)
             if not suitable_llm:
-                logger.error("未找到适合总结的LLM")
+                logger.error(f"未找到总结LLM: {summary_llm_name}")
                 return None
             
             llm_instance = suitable_llm["llm"]
             
             # 构建总结提示
-            summary_prompt = SUMMARY_CONFIG["summary_prompt_template"].format(
+            summary_prompt = FILE_PROCESSING_CONFIG["summary"]["prompt_template"].format(
                 filename=filename,
                 content=content
             )
@@ -199,9 +200,9 @@ class FileProcessor:
     """文件处理器"""
     
     def __init__(self):
-        self.storage = FileStorage(FILE_STORAGE_CONFIG["storage_dir"])
+        self.storage = FileStorage(FILE_PROCESSING_CONFIG["file_storage"]["storage_dir"])
         self.summarizer = AsyncSummarizer(self.storage)
-        self.token_limits = TOKEN_LIMITS
+        self.token_limits = FILE_PROCESSING_CONFIG["token_limits"]
     
     async def process_uploaded_files(self, file_paths: List[str]) -> Tuple[List[FileMessage], List[asyncio.Task]]:
         """处理上传的文件列表

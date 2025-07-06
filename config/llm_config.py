@@ -63,9 +63,9 @@ class LLMConfig:
                 "currency": "CNY",  # 货币类型
                 "qpm_limit": 1200,
                 "tpm_limit": 1000000,
-                "max_context_tokens": 10000,  # 最大上下文token数
-                "summary_trigger_tokens": 8000,  # 触发总结的token阈值
-                "max_summary_tokens": 600,  # 总结最大token数
+                "max_context_tokens": 60000,  # 最大上下文token数
+                "summary_trigger_tokens": 40000,  # 触发总结的token阈值
+                "max_summary_tokens": 1000,  # 总结最大token数
                 "enabled": True
             })
         
@@ -195,6 +195,7 @@ class LLMConfig:
             "currency": llm_config["currency"],  # 使用模型配置中的货币
             "unit": "per 1K tokens"
         }
+
 
 # 全局配置实例
 llm_config = LLMConfig() 

@@ -28,10 +28,9 @@ class SessionProcessor:
             thread_id: 线程ID
             
         Returns:
-            Tuple[str, Optional[object], List[Dict[str, Any]]]: (增强后的问题, 会话向量工具, 文件消息列表)
+            Tuple[str, Optional[object], List[Dict[str, Any]]]: (原始问题, 会话向量工具, 文件消息列表)
         """
         session_vector_tool = None
-        enhanced_question = question
         file_messages = []
         
         if session_files and len(session_files) > 0:
@@ -43,22 +42,14 @@ class SessionProcessor:
                 # 将文件消息存储到pending tasks中
                 self.pending_file_summaries[thread_id] = file_messages
                 
-                # 构建增强问题
-                if file_messages:
-                    # 提取文件内容用于问题增强
-                    file_contents = []
-                    for msg in file_messages:
-                        file_contents.append(msg["content"])
-                    
-                    combined_content = "\n".join(file_contents)
-                    enhanced_question = create_non_rag_question(question, combined_content)
+                logger.info(f"成功处理 {len(file_messages)} 个文件消息")
                 
             except Exception as e:
                 logger.error(f"新文件处理系统失败: {e}")
-                # 不进行降级，直接使用原始问题
-                enhanced_question = question
+                file_messages = []
         
-        return enhanced_question, session_vector_tool, file_messages
+        # 返回原始问题，不再混合文件内容
+        return question, session_vector_tool, file_messages
     
     async def finalize_session_summaries(self, thread_id: str) -> bool:
         """

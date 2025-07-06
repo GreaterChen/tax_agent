@@ -59,7 +59,7 @@ class TaxAgent:
         
         try:
             # 1. 处理会话文档和问题增强
-            enhanced_question, session_vector_tool, file_messages = await session_processor.process_session_files(
+            user_question, session_vector_tool, file_messages = await session_processor.process_session_files(
                 question, session_files, thread_id
             )
             
@@ -71,7 +71,7 @@ class TaxAgent:
             
             # 3. 使用重试机制选择LLM
             selected_llm = await request_processor.select_llm_with_retry_mechanism(
-                enhanced_question, request_id
+                user_question, request_id
             )
             
             # 4. 更新请求追踪中的模型信息
@@ -80,7 +80,7 @@ class TaxAgent:
             # 5. 创建工作流并执行
             workflow = workflow_manager.create_graph_with_summary(tools, selected_llm)
             result, ai_responses = await workflow_manager.execute_workflow_with_tracking(
-                workflow, enhanced_question, thread_id
+                workflow, user_question, thread_id, file_messages
             )
             
             # 6. 完成会话的文件总结任务（在对话结束后）
@@ -93,7 +93,7 @@ class TaxAgent:
             
             # 7. 计算成本
             cost_info = await request_processor.calculate_costs(
-                selected_llm, enhanced_question, result, ai_responses, request_id
+                selected_llm, user_question, result, ai_responses, request_id
             )
             
             # 8. 更新成本信息

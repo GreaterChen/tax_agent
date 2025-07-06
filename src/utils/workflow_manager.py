@@ -22,6 +22,7 @@ class WorkflowManager:
     
     def __init__(self):
         self.memory = MemorySaver()
+        self.file_summary_cache = {}  # 缓存文件总结信息
     
     def create_graph_with_summary(self, tools: List, llm_config_item: Dict) -> StateGraph:
         """创建带有消息总结功能的图"""
@@ -101,8 +102,9 @@ class WorkflowManager:
         
         # 添加总结节点到工作流
         builder.add_node("summarize", summarization_node)
-        builder.add_edge(START, "summarize")
-        builder.add_edge("summarize", "call_model")
+        # builder.add_edge(START, "summarize")
+        # builder.add_edge("summarize", "call_model")
+        builder.add_edge(START, "call_model")
         
         # 添加工具调用的条件边
         builder.add_conditional_edges(
@@ -117,10 +119,70 @@ class WorkflowManager:
         
         return builder.compile(checkpointer=self.memory)
     
-    async def execute_workflow_with_tracking(self, workflow, enhanced_question: str, 
-                                           thread_id: str) -> Tuple[List[str], List[AIMessage]]:
+    async def replace_file_messages_with_summaries(self, messages: List[AnyMessage], thread_id: str) -> List[AnyMessage]:
+        """
+        在对话历史中替换文件消息为总结内容
+        
+        Args:
+            messages: 原始消息列表
+            thread_id: 线程ID
+            
+        Returns:
+            替换后的消息列表
+        """
+        from src.utils.session_processor import session_processor
+        
+        # 获取已处理的文件消息
+        processed_file_messages = session_processor.get_processed_file_messages(thread_id)
+        
+        if not processed_file_messages:
+            return messages
+        
+        # 创建文件ID到总结内容的映射
+        file_summaries = {}
+        for file_msg in processed_file_messages:
+            file_info = file_msg.get("file_info", {})
+            if file_info.get("is_summary", False):
+                # 如果已经是总结，创建映射
+                filename = file_info.get("filename", "unknown")
+                content_hash = file_info.get("content_hash", "")
+                file_id = f"file_{filename}_{content_hash[:8]}" if content_hash else f"file_{filename}"
+                file_summaries[file_id] = file_msg.get("content", "")
+        
+        # 替换消息中的文件内容
+        updated_messages = []
+        for msg in messages:
+            if isinstance(msg, HumanMessage) and hasattr(msg, 'additional_kwargs'):
+                additional_kwargs = msg.additional_kwargs or {}
+                if additional_kwargs.get("is_file_message", False):
+                    file_id = additional_kwargs.get("file_id", "")
+                    if file_id in file_summaries:
+                        # 替换为总结内容
+                        updated_msg = HumanMessage(
+                            content=file_summaries[file_id],
+                            additional_kwargs=additional_kwargs
+                        )
+                        updated_messages.append(updated_msg)
+                        logger.info(f"替换文件消息 {file_id} 为总结内容")
+                    else:
+                        updated_messages.append(msg)
+                else:
+                    updated_messages.append(msg)
+            else:
+                updated_messages.append(msg)
+        
+        return updated_messages
+    
+    async def execute_workflow_with_tracking(self, workflow, user_question: str, 
+                                           thread_id: str, file_messages: List[Dict] = None) -> Tuple[List[str], List[AIMessage]]:
         """
         执行工作流，返回结果和AI响应对象
+        
+        Args:
+            workflow: 工作流对象
+            user_question: 用户问题
+            thread_id: 线程ID
+            file_messages: 文件消息列表
         
         Returns:
             Tuple[List[str], List[AIMessage]]: (响应文本列表, AI响应对象列表)
@@ -132,12 +194,33 @@ class WorkflowManager:
             "recursion_limit": 10
         }
         
-        # 准备初始状态 - 包含系统提示词
+        # 准备初始状态 - 系统提示词 + 文件消息 + 用户问题
+        messages = [SystemMessage(content=SYSTEM_PROMPT)]
+        
+        # 添加文件消息（如果有）
+        if file_messages:
+            for file_msg in file_messages:
+                # 为每个文件创建独立的消息，添加文件标识
+                file_info = file_msg.get("file_info", {})
+                filename = file_info.get("filename", "unknown")
+                content_hash = file_info.get("content_hash", "")
+                
+                # 创建带有文件标识的消息
+                file_message = HumanMessage(
+                    content=file_msg.get("content", ""),
+                    additional_kwargs={
+                        "file_info": file_info,
+                        "is_file_message": True,
+                        "file_id": f"file_{filename}_{content_hash[:8]}" if content_hash else f"file_{filename}"
+                    }
+                )
+                messages.append(file_message)
+        
+        # 添加用户问题
+        messages.append(HumanMessage(content=user_question))
+        
         initial_state = {
-            "messages": [
-                SystemMessage(content=SYSTEM_PROMPT),
-                HumanMessage(content=enhanced_question)
-            ],
+            "messages": messages,
             "context": {}
         }
         
