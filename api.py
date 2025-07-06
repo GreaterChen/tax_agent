@@ -1,11 +1,12 @@
 """FastAPI接口实现"""
-from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Request, File, UploadFile, Form
+from fastapi.responses import JSONResponse
 from typing import List, Optional
 from contextlib import asynccontextmanager
 import os
 import uuid
 import logging
+import shutil
 from dotenv import load_dotenv
 
 # 加载环境变量
@@ -33,6 +34,10 @@ logger = logging.getLogger(__name__)
 # 创建爬虫实例
 crawler = NewsCrawler(os.getenv("DATABASE_URL"))
 
+# 文件上传临时目录
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 启动时
@@ -52,28 +57,20 @@ app = FastAPI(
 # 设置全局异常处理
 setup_exception_handling(app, enable_debug=os.getenv("DEBUG", "false").lower() == "true")
 
-# 使用全局Agent实例
-
-class Question(BaseModel):
-    """问题请求模型"""
-    text: str
-    thread_id: Optional[str] = None
-    web_search: Optional[bool] = True
-    session_files: Optional[List[str]] = []
-    enable_rag: Optional[bool] = True
-    
-class Answer(BaseModel):
-    """回答响应模型"""
-    answers: List[str]
-    thread_id: str
-
 @app.post("/query")
-async def query(question: Question, request: Request):
-    """处理问答请求
+async def query(
+    request: Request,
+    text: str = Form(...),
+    thread_id: Optional[str] = Form(None),
+    files: List[UploadFile] = File(default=[])
+):
+    """处理问答请求（支持可选文件上传）
     
     Args:
-        question: 包含问题文本和线程ID的请求体
         request: FastAPI请求对象
+        text: 问题文本
+        thread_id: 线程ID（可选）
+        files: 上传的文件列表（可选）
         
     Returns:
         统一格式的响应
@@ -82,7 +79,7 @@ async def query(question: Question, request: Request):
     trace_id = getattr(request.state, 'trace_id', str(uuid.uuid4()))
     
     # 参数验证
-    if not question.text or not question.text.strip():
+    if not text or not text.strip():
         context = ErrorContext(
             request_id=trace_id,
             operation="POST /query",
@@ -95,27 +92,45 @@ async def query(question: Question, request: Request):
         )
     
     # 使用提供的thread_id或生成新的uuid
-    thread_id = question.thread_id or f"thread_{uuid.uuid4().hex}"
+    thread_id = thread_id or f"thread_{uuid.uuid4().hex}"
     
-    # 记录请求日志
-    logger.info(f"处理查询请求: {question.text[:100]}...", extra={
-        'trace_id': trace_id,
-        'thread_id': thread_id,
-        'web_search': question.web_search,
-        'enable_rag': question.enable_rag
-    })
+    # 处理上传文件
+    temp_file_paths = []
     
     try:
+        # 保存上传的文件到临时目录
+        for file in files:
+            if file.filename:
+                # 生成唯一的文件名
+                file_id = str(uuid.uuid4())
+                file_extension = os.path.splitext(file.filename)[1]
+                temp_filename = f"{file_id}_{file.filename}"
+                temp_file_path = os.path.join(UPLOAD_DIR, temp_filename)
+                
+                # 保存文件
+                with open(temp_file_path, "wb") as buffer:
+                    shutil.copyfileobj(file.file, buffer)
+                
+                temp_file_paths.append(temp_file_path)
+                logger.info(f"保存上传文件: {file.filename} -> {temp_file_path}")
+        
+        # 记录请求日志
+        file_count = len(temp_file_paths)
+        request_type = "带文件的查询" if file_count > 0 else "纯文本查询"
+        logger.info(f"处理{request_type}请求: {text[:100]}...", extra={
+            'trace_id': trace_id,
+            'thread_id': thread_id,
+            'file_count': file_count
+        })
+        
         # 调用代理执行查询
         result = await tax_agent.query(
-            question.text, 
+            text, 
             thread_id, 
-            question.web_search, 
-            question.session_files, 
-            question.enable_rag
+            temp_file_paths if temp_file_paths else None
         )
         
-        # 构建完整的响应数据，包含所有token和cost信息
+        # 构建响应数据
         response_data = {
             "answers": result.get("result", []),
             "thread_id": thread_id,
@@ -124,13 +139,13 @@ async def query(question: Question, request: Request):
             "provider": result.get("provider"),
             "total_cost": result.get("total_cost", 0),
             "currency": result.get("currency", "CNY"),
-            
-            # 详细的token使用量信息
             "token_usage": result.get("token_usage", {}),
-            
-            # 详细的成本分解信息
             "cost_breakdown": result.get("cost_breakdown", {}),
         }
+        
+        # 添加文件信息
+        if result.get("file_info"):
+            response_data["file_info"] = result["file_info"]
         
         return ResponseUtil.success(
             msg="查询成功",
@@ -156,6 +171,16 @@ async def query(question: Question, request: Request):
             cause=e,
             context=context
         )
+    
+    finally:
+        # 清理临时文件
+        for temp_file_path in temp_file_paths:
+            try:
+                if os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
+                    logger.info(f"清理临时文件: {temp_file_path}")
+            except Exception as e:
+                logger.warning(f"清理临时文件失败: {temp_file_path}, {e}")
 
 @app.get("/health")
 async def health_check():

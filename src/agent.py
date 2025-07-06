@@ -50,8 +50,8 @@ class TaxAgent:
         logger.info("TaxAgent初始化完成")
 
     async def query(self, question: str, thread_id: Optional[str] = None, 
-              web_search: bool = True, session_files: Optional[List[str]] = None, 
-              enable_rag: bool = True, user_id: Optional[str] = None) -> Dict[str, any]:
+              session_files: Optional[List[str]] = None, 
+              user_id: Optional[str] = None) -> Dict[str, any]:
         """执行查询 - 主要入口方法，返回包含结果和成本信息的字典"""
         
         # 开始请求追踪
@@ -59,13 +59,13 @@ class TaxAgent:
         
         try:
             # 1. 处理会话文档和问题增强
-            enhanced_question, session_vector_tool = session_processor.process_session_files(
-                question, session_files, enable_rag, thread_id
+            enhanced_question, session_vector_tool, file_messages = await session_processor.process_session_files(
+                question, session_files, thread_id
             )
             
             # 2. 获取工具列表
             tools = tools_manager.get_tools(
-                web_search=web_search,
+                web_search=True,
                 session_vector_tool=session_vector_tool
             )
             
@@ -83,19 +83,27 @@ class TaxAgent:
                 workflow, enhanced_question, thread_id
             )
             
-            # 6. 计算成本
+            # 6. 完成会话的文件总结任务（在对话结束后）
+            if session_files:
+                try:
+                    await session_processor.finalize_session_summaries(thread_id)
+                    logger.info(f"完成会话 {thread_id} 的文件总结任务")
+                except Exception as e:
+                    logger.error(f"完成文件总结失败: {e}")
+            
+            # 7. 计算成本
             cost_info = await request_processor.calculate_costs(
                 selected_llm, enhanced_question, result, ai_responses, request_id
             )
             
-            # 7. 更新成本信息
+            # 8. 更新成本信息
             request_tracker.update_cost(request_id, cost_info.get("total_cost", 0))
             
-            # 8. 完成请求追踪
+            # 9. 完成请求追踪
             request_tracker.complete_request(request_id, success=True)
             
-            # 9. 返回完整结果
-            return {
+            # 10. 构建响应结果
+            response_result = {
                 "result": result if result else ["抱歉，未能获取到有效回答"],
                 "request_id": request_id,
                 "model_used": selected_llm["name"],
@@ -121,6 +129,15 @@ class TaxAgent:
                     "currency": cost_info.get("currency", "CNY"),
                 },
             }
+            
+            # 11. 添加文件处理信息
+            if file_messages:
+                response_result["file_info"] = {
+                    "file_count": len(file_messages),
+                    "files": [msg.get("file_info", {}) for msg in file_messages]
+                }
+            
+            return response_result
             
         except RateLimitExceededException as e:
             # 限流异常的特殊处理
