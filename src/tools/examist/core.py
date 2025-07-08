@@ -1,14 +1,14 @@
 from asyncio import get_child_watcher
 import time
-from Filter import Filter
-from Select_Page import Select_Page
-from Get_Page import Get_Page
-from Select_Law import Select_Law
-from Final import Final
-from Get_Hint import Get_Hint
+from .Filter import Filter
+from .Select_Page import Select_Page
+from .Get_Page import Get_Page
+from .Select_Law import Select_Law
+from .Final import Final
+from .Get_Hint import Get_Hint
 
-from Get_Law import Get_Law
-from Get_Law_Indices import Get_Law_Indices
+from .Get_Law import Get_Law
+from .Get_Law_Indices import Get_Law_Indices
 
 async def core(input:str)-> dict:
     # 开始计时

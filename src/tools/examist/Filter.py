@@ -3,7 +3,7 @@ import json
 import asyncio
 import logging
 from typing import Any, Dict
-from ALLM import ALLM
+from .ALLM import ALLM
 # 设置日志
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)

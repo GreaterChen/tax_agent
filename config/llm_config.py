@@ -72,7 +72,7 @@ class LLMConfig:
         # gpt-4o-mini配置
         if os.getenv("OPENAI_API_KEY"):
             self.llm_configs.append({
-                "name": "gpt_4o_mini",
+                "name": "gpt-4o-mini",
                 "llm": ChatOpenAI(
                     model="gpt-4o-mini",
                     api_key=os.getenv("OPENAI_API_KEY"),

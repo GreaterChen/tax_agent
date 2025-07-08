@@ -22,7 +22,7 @@ current_dir = Path(__file__).parent
 sys.path.append(str(current_dir))
 
 # 导入examist1核心模块
-from core import core
+from .core import core
 
 # 配置日志
 logger = logging.getLogger("examist_tool")

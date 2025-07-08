@@ -18,7 +18,7 @@ class SessionProcessor:
         self.pending_file_summaries = {}  # 存储待处理的总结任务
     
     async def process_session_files(self, question: str, session_files: Optional[List[str]], 
-                                  thread_id: str) -> Tuple[str, Optional[object], List[Dict[str, Any]]]:
+                                  thread_id: str) -> Tuple[str, List[Dict[str, Any]]]:
         """
         处理会话文件和问题增强
         
@@ -28,9 +28,8 @@ class SessionProcessor:
             thread_id: 线程ID
             
         Returns:
-            Tuple[str, Optional[object], List[Dict[str, Any]]]: (原始问题, 会话向量工具, 文件消息列表)
+            Tuple[str, List[Dict[str, Any]]]: (原始问题, 文件消息列表)
         """
-        session_vector_tool = None
         file_messages = []
         
         if session_files and len(session_files) > 0:
@@ -48,8 +47,8 @@ class SessionProcessor:
                 logger.error(f"新文件处理系统失败: {e}")
                 file_messages = []
         
-        # 返回原始问题，不再混合文件内容
-        return question, session_vector_tool, file_messages
+        # 返回原始问题和文件消息列表
+        return question, file_messages
     
     async def finalize_session_summaries(self, thread_id: str) -> bool:
         """

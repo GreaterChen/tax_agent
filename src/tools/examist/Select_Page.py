@@ -3,13 +3,13 @@ import json
 import asyncio
 import logging
 from typing import Any, Dict
-from ALLM import ALLM
+from .ALLM import ALLM
 
 # 设置日志
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-with open('Dependencies/Books/Book_Index.txt','r') as f:
+with open('src/tools/examist/Dependencies/Books/Book_Index.txt','r', encoding='utf-8') as f:
     Book_Index = f.read()
 
 SYS_PROMPT = '''

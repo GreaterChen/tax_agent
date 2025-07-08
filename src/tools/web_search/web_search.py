@@ -41,8 +41,7 @@ from langchain_community.document_loaders import BSHTMLLoader
 from langchain_text_splitters import HTMLSemanticPreservingSplitter
 from langchain_core.documents import Document
 
-# 导入embedding配置
-from config.embedding_config import get_embedding_model_config
+# embedding配置将在需要时动态导入
 
 # 配置日志
 def setup_logging():
@@ -99,13 +98,12 @@ class WebSearchTool:
         self.result_cache = {}
         self.content_cache = {}
         
-        # 初始化向量存储 - 使用统一的embedding配置
-        embedding_config = get_embedding_model_config()
-        self.embeddings = HuggingFaceEmbeddings(**embedding_config)
+        # 延迟初始化embedding（只有在需要时才加载）
+        self._embeddings = None
         
         # 初始化spacy模型缓存
         self.nlp_models = {}
-        
+
         # HTML处理配置
         self.html_headers_to_split_on = [
             ("h1", "Header 1"),
@@ -132,6 +130,15 @@ class WebSearchTool:
         
         # 设置默认新闻来源
         self.default_news_sources = DEFAULT_NEWS_SOURCES
+
+    @property
+    def embeddings(self):
+        """懒加载embeddings模型"""
+        if self._embeddings is None:
+            from config.embedding_config import get_embedding_model_config
+            embedding_config = get_embedding_model_config()
+            self._embeddings = HuggingFaceEmbeddings(**embedding_config)
+        return self._embeddings
 
     def _get_nlp_model(self, lang: str) -> Language:
         """获取对应语言的spacy模型

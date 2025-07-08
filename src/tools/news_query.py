@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 # 输入模型
 class NewsQueryInput(BaseModel):
     """新闻查询输入"""
-    language: str = Field(..., description="语言代码，取值范围：zh_sim / zh_hk / eng")
+    language: str = Field(..., description="语言代码，取值范围：zh-cn / zh-hk / en")
     number: int = Field(..., description="需要返回的新闻数量", ge=1, le=10)
 
 # 输出模型
@@ -30,6 +30,21 @@ class NewsQueryTool:
     def query(self, language: str, number: int) -> str:
         """根据语言和指定数量从新闻数据库中查询最新的新闻内容和链接"""
         try:
+            # 转换语言格式以兼容旧格式
+            lang_mapping = {
+                "zh-cn": "zh-cn",
+                "zh-hk": "zh-hk", 
+                "en": "en",
+                # 兼容旧格式
+                "zh_sim": "zh-cn",
+                "zh_hk": "zh-hk",
+                "eng": "en",
+                "Sim": "zh-cn",
+                "Trad": "zh-hk",
+                "Eng": "en"
+            }
+            db_language = lang_mapping.get(language, language)
+            
             query = text("""
                 SELECT content, url, source, date 
                 FROM news 
@@ -40,7 +55,7 @@ class NewsQueryTool:
 
             with self.engine.connect() as conn:
                 results = conn.execute(query, {
-                    "language": language,
+                    "language": db_language,
                     "number": number
                 }).fetchall()
 

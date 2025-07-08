@@ -3,8 +3,8 @@ import json
 import asyncio
 import logging
 from typing import Any, Dict
-from ALLM import ALLM
-from text import Law_List
+from .ALLM import ALLM
+from .text import Law_List
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)

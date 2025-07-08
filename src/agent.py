@@ -15,7 +15,6 @@ if not hasattr(typing, 'NotRequired'):
 
 from config.llm_config import llm_config
 from src.utils.llm_selector import RateLimitExceededException
-from src.utils.tools_manager import tools_manager
 from src.utils.request_tracker import request_tracker
 
 # 导入专门的管理器
@@ -59,32 +58,25 @@ class TaxAgent:
         
         try:
             # 1. 处理会话文档和问题增强
-            user_question, session_vector_tool, file_messages = await session_processor.process_session_files(
+            user_question, file_messages = await session_processor.process_session_files(
                 question, session_files, thread_id
             )
             
-            # 2. 获取工具列表
-            tools = tools_manager.get_tools(
-                web_search=True,
-                examist=True,
-                session_vector_tool=session_vector_tool
-            )
-            
-            # 3. 使用重试机制选择LLM
+            # 2. 使用重试机制选择LLM
             selected_llm = await request_processor.select_llm_with_retry_mechanism(
                 user_question, request_id
             )
             
-            # 4. 更新请求追踪中的模型信息
+            # 3. 更新请求追踪中的模型信息
             request_tracker.update_model_selection(request_id, selected_llm["name"])
             
-            # 5. 创建工作流并执行
-            workflow = workflow_manager.create_graph_with_summary(tools, selected_llm)
+            # 4. 创建基于意图识别的工作流并执行
+            workflow = workflow_manager.create_intention_based_workflow(selected_llm)
             result, ai_responses = await workflow_manager.execute_workflow_with_tracking(
                 workflow, user_question, thread_id, file_messages
             )
             
-            # 6. 完成会话的文件总结任务（在对话结束后）
+            # 5. 完成会话的文件总结任务（在对话结束后）
             if session_files:
                 try:
                     await session_processor.finalize_session_summaries(thread_id)
@@ -92,18 +84,18 @@ class TaxAgent:
                 except Exception as e:
                     logger.error(f"完成文件总结失败: {e}")
             
-            # 7. 计算成本
+            # 6. 计算成本
             cost_info = await request_processor.calculate_costs(
                 selected_llm, user_question, result, ai_responses, request_id
             )
             
-            # 8. 更新成本信息
+            # 7. 更新成本信息
             request_tracker.update_cost(request_id, cost_info.get("total_cost", 0))
             
-            # 9. 完成请求追踪
+            # 8. 完成请求追踪
             request_tracker.complete_request(request_id, success=True)
             
-            # 10. 构建响应结果
+            # 9. 构建响应结果
             response_result = {
                 "result": result if result else ["抱歉，未能获取到有效回答"],
                 "request_id": request_id,
@@ -131,7 +123,7 @@ class TaxAgent:
                 },
             }
             
-            # 11. 添加文件处理信息
+            # 10. 添加文件处理信息
             if file_messages:
                 response_result["file_info"] = {
                     "file_count": len(file_messages),
