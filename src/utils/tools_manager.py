@@ -11,6 +11,7 @@ from src.tools.latex_calc.latex_calc import latex_calc_tool
 from src.tools.news_query import news_query_tool
 from src.tools.web_search.web_search import advanced_web_search_tool
 from src.tools.vector_search.vector_search import vector_search_tool
+from src.tools.examist.examist_tool import examist_tool
 
 logger = logging.getLogger(__name__)
 
@@ -27,17 +28,19 @@ class ToolsManager:
         # 可选工具
         self.web_search_tool = advanced_web_search_tool
         self.news_query_tool = news_query_tool
+        self.examist_tool = examist_tool
         
         logger.info("工具管理器初始化完成")
     
-    def get_tools(self, web_search: bool = True, news_query: bool = False, 
-                  session_vector_tool: Optional[BaseTool] = None) -> List[BaseTool]:
+    def get_tools(self, web_search: bool = True, news_query: bool = False,
+                  examist: bool = True, session_vector_tool: Optional[BaseTool] = None) -> List[BaseTool]:
         """
         根据配置获取工具列表
         
         Args:
             web_search: 是否启用网络搜索
             news_query: 是否启用新闻查询
+            examist: 是否启用香港税务专家工具
             session_vector_tool: 会话级向量搜索工具
             
         Returns:
@@ -62,6 +65,10 @@ class ToolsManager:
         if news_query:
             tools.append(self.news_query_tool)
             logger.info("添加新闻查询工具")
+        
+        if examist:
+            tools.append(self.examist_tool)
+            logger.info("添加香港税务专家工具")
         
         return tools
     
@@ -95,7 +102,8 @@ class ToolsManager:
             ],
             "optional_tools": [
                 {"name": self.web_search_tool.name, "description": self.web_search_tool.description, "type": "web_search"},
-                {"name": self.news_query_tool.name, "description": self.news_query_tool.description, "type": "news_query"}
+                {"name": self.news_query_tool.name, "description": self.news_query_tool.description, "type": "news_query"},
+                {"name": self.examist_tool.name, "description": self.examist_tool.description, "type": "examist"}
             ]
         }
 

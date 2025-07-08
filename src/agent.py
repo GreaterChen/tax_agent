@@ -66,6 +66,7 @@ class TaxAgent:
             # 2. 获取工具列表
             tools = tools_manager.get_tools(
                 web_search=True,
+                examist=True,
                 session_vector_tool=session_vector_tool
             )
             
