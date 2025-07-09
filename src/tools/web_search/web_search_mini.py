@@ -632,6 +632,51 @@ class AdvancedWebSearchTool:
                 error_msg += f"  Summary: {doc.metadata['snippet']}\n\n"
             return error_msg
 
+    def _parse_search_result_string(self, result_string: str, query: str) -> Optional[Dict]:
+        """解析搜索结果字符串
+        
+        Args:
+            result_string: 搜索结果字符串
+            query: 查询词
+            
+        Returns:
+            解析后的搜索结果字典，如果解析失败则返回None
+        """
+        try:
+            # 使用正则表达式提取URL、标题和摘要
+            url_match = re.search(r'URL：(https?://[^\n]+)', result_string)
+            title_match = re.search(r'网址标题：([^\n]+)', result_string)
+            abstract_match = re.search(r'摘要：(.+)$', result_string, re.DOTALL)
+            
+            if not url_match:
+                logger.warning(f"无法从搜索结果中提取URL: {result_string[:100]}...")
+                return None
+            
+            url = url_match.group(1).strip()
+            title = title_match.group(1).strip() if title_match else ""
+            abstract = abstract_match.group(1).strip() if abstract_match else ""
+            
+            # 清理摘要中的HTML标签
+            abstract = re.sub(r'<[^>]+>', '', abstract)
+            
+            # 移除摘要末尾的省略号
+            abstract = re.sub(r'\.\.\.+$', '', abstract).strip()
+            
+            result = {
+                "title": title,
+                "link": url,
+                "snippet": abstract,
+                "query": query
+            }
+            
+            logger.debug(f"成功解析搜索结果: {title} - {url}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"解析搜索结果字符串失败: {str(e)}")
+            logger.debug(f"问题字符串: {result_string}")
+            return None
+
     def _bing_search(self, query: str) -> List[Dict]:
         """执行搜索
         
@@ -656,28 +701,46 @@ class AdvancedWebSearchTool:
             "keyword": query
         }
         
+        # 设置请求头，与_fetch_page_content方法保持一致
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
         logger.info(f"执行搜索请求: {url}?keyword={quote_plus(query)}")
         
         try:
-            response = requests.get(url, params=params)
+            response = requests.get(url, params=params, headers=headers, timeout=15)
+            
+            # 添加更详细的调试信息
+            logger.info(f"HTTP响应状态码: {response.status_code}")
+            logger.debug(f"HTTP响应头: {dict(response.headers)}")
+            
             response.raise_for_status()
             search_data = response.json()
             
             # 记录API响应
             logger.debug(f"搜索API响应: {json.dumps(search_data, ensure_ascii=False)}")
             
-            if "results" not in search_data or not search_data["results"]:
+            # 检查API响应结构
+            if "results" not in search_data or "results" not in search_data["results"]:
                 logger.warning("未找到搜索结果")
+                return []
+            
+            result_strings = search_data["results"]["results"]
+            if not result_strings:
+                logger.warning("搜索结果为空")
                 return []
                 
             results = []
-            for item in search_data.get("results", []):
-                results.append({
-                    "title": item.get("title", ""),
-                    "link": item.get("url", ""),
-                    "snippet": item.get("abstract", ""),
-                    "query": query
-                })
+            # 跳过第一个元素（通常是介绍性文本）
+            for item in result_strings[1:]:
+                if not isinstance(item, str):
+                    continue
+                    
+                # 解析字符串格式的搜索结果
+                parsed_result = self._parse_search_result_string(item, query)
+                if parsed_result:
+                    results.append(parsed_result)
             
             # 保存到缓存
             self.result_cache[cache_key] = results
@@ -689,6 +752,12 @@ class AdvancedWebSearchTool:
                 logger.info(f"结果 {i+1}: {result['title']} - {result['link']}")
                 
             return results
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"HTTP错误 - 状态码: {e.response.status_code}, 响应内容: {e.response.text[:500]}")
+            return []
+        except requests.exceptions.RequestException as e:
+            logger.error(f"请求异常: {str(e)}", exc_info=True)
+            return []
         except Exception as e:
             logger.error(f"搜索失败: {str(e)}", exc_info=True)
             return []
