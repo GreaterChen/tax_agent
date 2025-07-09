@@ -13,7 +13,7 @@ def Get_Hint(fields: list) -> str:
         
     result = []
     try:
-        with open("Dependencies/Hints/Hints.txt", "r", encoding="utf-8") as f:
+        with open("src/tools/examist/Dependencies/Hints/Hints.txt", "r", encoding="utf-8") as f:
             lines = f.readlines()
             
         i = 0

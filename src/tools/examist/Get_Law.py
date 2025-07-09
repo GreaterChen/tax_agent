@@ -53,7 +53,7 @@ def Get_Section(query: str, data=None) -> str:
 
 def Get_Law_Title(law_name: str) -> str:
     law_name_norm = normalize(law_name)
-    folder = os.path.join("Dependencies", "Laws")
+    folder = os.path.join("src/tools/examist/Dependencies", "Laws")
 
     if not os.path.isdir(folder):
         return "未找到法律数据文件夹：Dependencies/Laws"

@@ -1,14 +1,27 @@
 from asyncio import get_child_watcher
 import time
-from .Filter import Filter
-from .Select_Page import Select_Page
-from .Get_Page import Get_Page
-from .Select_Law import Select_Law
-from .Final import Final
-from .Get_Hint import Get_Hint
 
-from .Get_Law import Get_Law
-from .Get_Law_Indices import Get_Law_Indices
+# 处理相对导入和绝对导入
+try:
+    # 相对导入（作为模块使用时）
+    from .Filter import Filter
+    from .Select_Page import Select_Page
+    from .Get_Page import Get_Page
+    from .Select_Law import Select_Law
+    from .Final import Final
+    from .Get_Hint import Get_Hint
+    from .Get_Law import Get_Law
+    from .Get_Law_Indices import Get_Law_Indices
+except ImportError:
+    # 绝对导入（直接运行时）
+    from Filter import Filter
+    from Select_Page import Select_Page
+    from Get_Page import Get_Page
+    from Select_Law import Select_Law
+    from Final import Final
+    from Get_Hint import Get_Hint
+    from Get_Law import Get_Law
+    from Get_Law_Indices import Get_Law_Indices
 
 async def core(input:str)-> dict:
     # 开始计时

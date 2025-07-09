@@ -41,7 +41,7 @@ Output:
 Output in JSON format:
 {
     "Mode":"Hybrid/Single" #If multiple intentions are found -> Hybrid. Otherwise -> Single.
-    "Lang":"zh-cn/zh-hk/en" #The user's expected response language: zh-cn for Simplified Chinese, zh-hk for Traditional Chinese, en for English.
+    "Lang":"zh-cn/zh-hk/en" #The user's expected response language, which is based on user's original message: zh-cn for Simplified Chinese, zh-hk for Traditional Chinese, en for English.
     "Intentions":[
         {"Code":"A/B/C/D/E",
         "Content":"The full input that is needed to satisfy the intention."

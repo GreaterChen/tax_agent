@@ -2,8 +2,15 @@ import re
 import json
 import asyncio
 import logging
+import os
+from pathlib import Path
 from typing import Any, Dict
-from .ALLM import ALLM
+
+# 处理相对导入和绝对导入
+try:
+    from .ALLM import ALLM
+except ImportError:
+    from ALLM import ALLM
 
 # 设置日志
 logging.basicConfig(level=logging.DEBUG)

@@ -30,7 +30,7 @@ from typing import List, Tuple, Dict
 # ---------------------------------------------------------------------------
 # Configuration – adjust the textbook path here if necessary
 # ---------------------------------------------------------------------------
-TEXTBOOK_PATH = Path("Dependencies/Books/Book.txt")
+TEXTBOOK_PATH = Path("src/tools/examist/Dependencies/Books/Book.txt")
 
 # ---------------------------------------------------------------------------
 # Helper functions

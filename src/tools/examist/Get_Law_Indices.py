@@ -9,7 +9,7 @@ def Get_Law_Indices() -> str:
         str: 拼接后的Indices字符串
     """
     # 获取所有json文件路径
-    law_dir = "Dependencies/Laws"
+    law_dir = "src/tools/examist/Dependencies/Laws"
     json_files = [f for f in os.listdir(law_dir) if f.endswith('.json')]
     
     # 提取并拼接Indices

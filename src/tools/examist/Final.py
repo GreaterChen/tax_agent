@@ -3,8 +3,14 @@ import json
 import asyncio
 import logging
 from typing import Any, Dict
-from .ALLM import ALLM
-from .text import Law_List
+
+# 处理相对导入和绝对导入
+try:
+    from .ALLM import ALLM
+    from .text import Law_List
+except ImportError:
+    from ALLM import ALLM
+    from text import Law_List
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
