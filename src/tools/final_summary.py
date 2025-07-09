@@ -76,6 +76,27 @@ FINAL_SUMMARY_PROMPT_TRAD = """角色：
 注意事項：
 回答可能使用不同語言，但你應始終以繁体中文（香港）輸出。這要求你對內容進行準確的翻譯，以及對必要的名稱、術語用括號備註再後面，人名無需翻譯。"""
 
+# 英文用户消息模板
+USER_MESSAGE_EN = """Please generate a final response based on the above information. Here is the complete conversation history:
+
+{conversation_history}
+
+Please generate a coherent response based on the conversation history and tool execution results."""
+
+# 简体中文用户消息模板
+USER_MESSAGE_SIMP = """请基于以上信息生成最终回答。以下是完整的对话历史：
+
+{conversation_history}
+
+请根据对话历史和工具执行结果，生成一个连贯的回答。"""
+
+# 繁体中文用户消息模板
+USER_MESSAGE_TRAD = """請基於以上信息生成最終回答。以下是完整的對話歷史：
+
+{conversation_history}
+
+請根據對話歷史和工具執行結果，生成一個連貫的回答。"""
+
 class FinalSummaryTool:
     """最终汇总工具"""
     
@@ -139,6 +160,36 @@ class FinalSummaryTool:
             logger.error(f"格式化任务和回答失败: {e}")
             return f"**Task 1**\n任务格式化错误\n\n**Answer 1**\n{str(tool_result)}"
 
+    def format_conversation_history(self, messages: List[BaseMessage]) -> str:
+        """格式化对话历史"""
+        try:
+            if not messages:
+                return "无对话历史"
+            
+            formatted_messages = []
+            for i, message in enumerate(messages):
+                if isinstance(message, HumanMessage):
+                    role = "user"
+                    content = message.content
+                elif isinstance(message, AIMessage):
+                    role = "assistant"
+                    content = message.content
+                else:
+                    role = "system"
+                    content = message.content
+                
+                # 限制每条消息的长度，避免过长
+                if len(content) > 500:
+                    content = content[:500] + "..."
+                
+                formatted_messages.append(f"[{role}]: {content}")
+            
+            return "\n\n".join(formatted_messages)
+            
+        except Exception as e:
+            logger.error(f"格式化对话历史失败: {e}")
+            return "对话历史格式化失败"
+
     async def generate_final_summary(self, messages: List[BaseMessage], intention_result: Dict, 
                              tool_result: Union[str, List[Dict]], original_query: str) -> Dict[str, Any]:
         """
@@ -159,20 +210,26 @@ class FinalSummaryTool:
             
             if response_language == "en":
                 prompt_template = FINAL_SUMMARY_PROMPT_EN
+                user_message_template = USER_MESSAGE_EN
             elif response_language == "zh-cn":
                 prompt_template = FINAL_SUMMARY_PROMPT_SIMP
+                user_message_template = USER_MESSAGE_SIMP
             else:  # zh-hk
                 prompt_template = FINAL_SUMMARY_PROMPT_TRAD
+                user_message_template = USER_MESSAGE_TRAD
             
             # 格式化任务和回答
             task_answers = self.format_task_answers(tool_result, intention_result)
+            
+            # 格式化对话历史
+            conversation_history = self.format_conversation_history(messages)
             
             # 构建最终的prompt
             final_prompt = prompt_template.format(task_answers=task_answers)
             
             # 调用异步LLM生成最终回答，使用第一个可用的模型
             response_content, usage_info = await self.llm_client.simple_chat(
-                user_message="请基于以上信息生成最终回答",
+                user_message=user_message_template.format(conversation_history=conversation_history),
                 system_message=final_prompt,
                 model_name=None  # 让服务自动选择模型
             )

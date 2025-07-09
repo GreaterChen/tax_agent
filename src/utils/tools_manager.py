@@ -96,7 +96,7 @@ class AsyncToolsManager:
             logger.error(f"异步自我介绍失败: {e}")
             return f"自我介绍遇到问题: {str(e)}"
     
-    async def final_summary(self, query: str, tool_results: List[Dict[str, Any]]) -> str:
+    async def final_summary(self, query: str, tool_results: List[Dict[str, Any]], intention_result: Dict[str, Any] = None) -> str:
         """异步最终总结"""
         try:
             from src.tools.final_summary import final_summary_tool_instance
@@ -105,8 +105,9 @@ class AsyncToolsManager:
             from langchain_core.messages import HumanMessage
             messages = [HumanMessage(content=query)]
             
-            # 创建空的意图结果
-            intention_result = {"Intentions": [], "Lang": "zh-cn"}
+            # 使用传入的意图结果，如果没有则创建默认的
+            if intention_result is None:
+                intention_result = {"Intentions": [], "Lang": "zh-cn"}
             
             # 调用异步方法
             result = await final_summary_tool_instance.generate_final_summary(

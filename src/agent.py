@@ -57,10 +57,14 @@ class AsyncTaxAgent:
             tool_results = await self.tools_manager.execute_tools_concurrently(intentions, question)
             
             # 3. 最终总结
-            final_answer = await self.tools_manager.final_summary(question, [
-                {"tool": f"intention_{i}", "result": result} 
-                for i, result in enumerate(tool_results)
-            ])
+            final_answer = await self.tools_manager.final_summary(
+                query=question, 
+                tool_results=[
+                    {"tool": f"intention_{i}", "result": result} 
+                    for i, result in enumerate(tool_results)
+                ],
+                intention_result=intention_result
+            )
             
             # 只返回最终总结结果
             return self._build_response(request_id, [final_answer], intention_result.get("_usage_info"))

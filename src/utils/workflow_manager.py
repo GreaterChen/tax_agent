@@ -264,7 +264,8 @@ class WorkflowManager:
                     try:
                         final_response = await tools_manager.final_summary(
                             query=original_query,
-                            tool_results=tool_results
+                            tool_results=tool_results,
+                            intention_result=intention_result
                         )
                     except Exception as summary_error:
                         logger.error(f"异步最终汇总工具失败: {summary_error}")

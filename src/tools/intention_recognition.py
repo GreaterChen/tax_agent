@@ -123,21 +123,19 @@ class IntentionRecognitionTool:
             Dict: 包含意图识别结果和使用统计的字典
         """
         try:
-            # 构建用于意图识别的完整消息
-            formatted_messages = [{"role": "system", "content": INTENTION_RECOGNITION_PROMPT}]
-            
-            # 添加对话历史
+            # 构建用户消息内容，包含对话历史
+            user_messages = []
             for msg in messages:
-                if msg.get("role") in ["user", "assistant", "system"]:
-                    formatted_messages.append({
-                        "role": msg.get("role"),
-                        "content": msg.get("content", "")
-                    })
+                user_messages.append(f"{msg.get('role')}: {msg.get('content', '')}")
             
-            # 调用异步LLM进行意图识别，使用qwen-max-latest模型
-            response_content, usage_info = await self.llm_client.chat_completion(
-                messages=formatted_messages,
-                model_name="qwen-max-latest"
+            # 构建完整的用户消息
+            user_message = "\n".join(user_messages)
+            
+            # 调用异步LLM进行意图识别
+            response_content, usage_info = await self.llm_client.simple_chat(
+                user_message=user_message,
+                system_message=INTENTION_RECOGNITION_PROMPT,
+                model_name="o4-mini"
             )
             
             # 清理响应内容，提取JSON

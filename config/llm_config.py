@@ -70,17 +70,17 @@ class LLMConfig:
             })
 
             self.llm_configs.append({
-                "name": "qwen-plus",
+                "name": "qwen-plus-latest",
                 "llm": ChatOpenAI(
                     api_key=os.getenv("DASHSCOPE_API_KEY"),
                     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-                    model="qwen-plus"
+                    model="qwen-plus-latest"
                 ),
                 "provider": "qwen",
                 "priority": 2,
                 "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 "api_key": os.getenv("DASHSCOPE_API_KEY"),
-                "model_name": "qwen-plus",
+                "model_name": "qwen-plus-latest",
                 "input_price": 0.0024,  # 每1K tokens价格
                 "output_price": 0.0096,  # 每1K tokens价格
                 "cached_price": 0.00096,  # 命中缓存的价格
@@ -93,12 +93,12 @@ class LLMConfig:
                 "enabled": True
             })
         
-        # gpt-4o-mini配置
+        # o4-mini配置
         if os.getenv("OPENAI_API_KEY"):
             self.llm_configs.append({
-                "name": "gpt-4o-mini",
+                "name": "o4-mini",
                 "llm": ChatOpenAI(
-                    model="gpt-4o-mini",
+                    model="o4-mini",
                     api_key=os.getenv("OPENAI_API_KEY"),
                     base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
                 ),
@@ -106,13 +106,13 @@ class LLMConfig:
                 "priority": 2,
                 "base_url": os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
                 "api_key": os.getenv("OPENAI_API_KEY"),
-                "model_name": "gpt-4o-mini",
-                "input_price": 0.00015,  # 每1K tokens价格(USD)
-                "output_price": 0.0006,  # 每1K tokens价格(USD)
-                "cached_price": 0.000075,  # 命中缓存的价格(USD)
-                "currency": "USD",  # 货币类型
-                "qpm_limit": 50,
-                "tpm_limit": 150000,
+                "model_name": "o4-mini",
+                "input_price": 0.01,  # 每1K tokens价格(USD)
+                "output_price": 0.04,  # 每1K tokens价格(USD)
+                "cached_price": 0.0024,  # 命中缓存的价格(USD)
+                "currency": "CNY",  # 货币类型
+                "qpm_limit": 1200,
+                "tpm_limit": 1000000,
                 "max_context_tokens": 8000,  # 最大上下文token数
                 "summary_trigger_tokens": 6000,  # 触发总结的token阈值
                 "max_summary_tokens": 500,  # 总结最大token数
