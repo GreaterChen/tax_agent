@@ -1,5 +1,6 @@
 import os
-from typing import Union
+import time
+from typing import Union, Dict, Any
 from datetime import datetime
 from langchain_core.tools import StructuredTool
 from sqlalchemy import create_engine, text
@@ -27,8 +28,10 @@ class NewsQueryTool:
     def __init__(self, db_url: str):
         self.engine = create_engine(db_url)
 
-    def query(self, language: str, number: int) -> str:
-        """根据语言和指定数量从新闻数据库中查询最新的新闻内容和链接"""
+    def query(self, language: str, number: int) -> Dict[str, Any]:
+        """根据语言和指定数量从新闻数据库中查询最新的新闻内容和链接（支持使用统计）"""
+        start_time = time.time()
+        
         try:
             # 转换语言格式以兼容旧格式
             lang_mapping = {
@@ -59,17 +62,51 @@ class NewsQueryTool:
                     "number": number
                 }).fetchall()
 
+            processing_time = time.time() - start_time
+            
             if results:
                 news_list = [
                     f"[{i+1}] 来源：{row[2]} 日期：{row[3]}\n内容：{row[0]}\n链接：{row[1]}"
                     for i, row in enumerate(results)
                 ]
-                return "\n\n".join(news_list)
+                response = "\n\n".join(news_list)
             else:
-                return "未找到符合条件的新闻记录。"
+                response = "未找到符合条件的新闻记录。"
+
+            # 构建包含使用统计的完整结果
+            result = {
+                "response": response,
+                "usage_info": {
+                    "request_id": f"news_query_{int(time.time())}",
+                    "model_used": "database_query",
+                    "provider": "local",
+                    "total_cost": 0.0,
+                    "currency": "CNY",
+                    "token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                    "cost_breakdown": {"input_cost": 0, "output_cost": 0, "total_cost": 0},
+                    "processing_time": processing_time
+                }
+            }
+            
+            return result
 
         except Exception as e:
-            return f"查询失败: {str(e)}"
+            processing_time = time.time() - start_time
+            error_response = f"查询失败: {str(e)}"
+            
+            return {
+                "response": error_response,
+                "usage_info": {
+                    "request_id": f"news_query_error_{int(time.time())}",
+                    "model_used": "database_query",
+                    "provider": "local",
+                    "total_cost": 0.0,
+                    "currency": "CNY",
+                    "token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                    "cost_breakdown": {"input_cost": 0, "output_cost": 0, "total_cost": 0},
+                    "processing_time": processing_time
+                }
+            }
 
 # 工具封装为 StructuredTool
 query_tool_instance = NewsQueryTool(os.getenv("DATABASE_URL"))

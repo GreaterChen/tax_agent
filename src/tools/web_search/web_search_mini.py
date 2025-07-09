@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
-from langchain_community.chat_models import ChatTongyi
+# 移除ChatTongyi导入，使用新的LLM客户端
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, quote_plus
 import re
@@ -77,10 +77,9 @@ class AdvancedWebSearchInput(BaseModel):
 class AdvancedWebSearchTool:
     def __init__(self):
         """初始化搜索工具及LLM"""
-        self.llm = ChatTongyi(
-            model="qwen-long",
-            api_key=os.getenv("DASHSCOPE_API_KEY")
-        )
+        # 使用新的LLM客户端
+        from src.utils.llm_client import llm_client
+        self.llm_client = llm_client
         
         # 初始化结果缓存
         self.result_cache = {}
@@ -91,6 +90,10 @@ class AdvancedWebSearchTool:
         
         # 设置默认新闻来源
         self.default_news_sources = DEFAULT_NEWS_SOURCES
+        
+        logger.info("高级网络搜索工具初始化完成，使用远程LLM服务")
+
+
 
     def _detect_language(self, text: str) -> str:
         """检测文本语言
@@ -196,14 +199,41 @@ class AdvancedWebSearchTool:
         prompt = prompt_text.format(original_query, sites_text)
         
         print(f"生成{'中文' if query_lang.startswith('zh') else '英文'}搜索查询词...")
-        response = self.llm.invoke(prompt)
         
+        # 使用异步LLM客户端在线程池中执行
         try:
-            json_match = re.search(r'```json\s*([\s\S]*?)\s*```', response.content)
+            import asyncio
+            from src.utils.llm_client import llm_client
+            
+            # 获取当前事件循环或创建新的
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # 在线程池中执行异步方法
+            async def _async_generate():
+                response_content, usage_info = await llm_client.simple_chat(
+                    user_message=prompt,
+                    system_message="",
+                    model_name="qwen-plus"
+                )
+                return response_content, usage_info
+            
+            response_content, usage_info = loop.run_until_complete(_async_generate())
+            
+            # 记录使用统计
+            logger.info(f"搜索查询生成完成 - 模型: {usage_info.model_used}, "
+                       f"Token: {usage_info.token_usage.get('total_tokens', 0)}, "
+                       f"成本: {usage_info.total_cost}{usage_info.currency}")
+            
+            # 解析JSON响应
+            json_match = re.search(r'```json\s*([\s\S]*?)\s*```', response_content)
             if json_match:
                 json_str = json_match.group(1)
             else:
-                json_str = re.search(r'\[\s*\{.*\}\s*\]', response.content, re.DOTALL).group(0)
+                json_str = re.search(r'\[\s*\{.*\}\s*\]', response_content, re.DOTALL).group(0)
             
             search_queries = json.loads(json_str)
             
@@ -561,10 +591,38 @@ class AdvancedWebSearchTool:
         logger.info("生成提示完成，开始调用LLM生成回答")
         
         try:
-            logger.info("调用LLM生成回答")
-            response = self.llm.invoke(prompt)
+            logger.info("调用封装好的LLM客户端生成回答")
+            
+            # 使用异步LLM客户端在线程池中执行
+            import asyncio
+            from src.utils.llm_client import llm_client
+            
+            # 获取当前事件循环或创建新的
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # 在线程池中执行异步方法
+            async def _async_analyze():
+                response_content, usage_info = await llm_client.simple_chat(
+                    user_message=prompt,
+                    system_message="",
+                    model_name="qwen-plus"
+                )
+                return response_content, usage_info
+            
+            response_content, usage_info = loop.run_until_complete(_async_analyze())
+            
+            # 记录使用统计
+            logger.info(f"网络搜索分析完成 - 模型: {usage_info.model_used}, "
+                       f"Token: {usage_info.token_usage.get('total_tokens', 0)}, "
+                       f"成本: {usage_info.total_cost}{usage_info.currency}")
+            
             logger.info("LLM回答生成成功")
-            return response.content
+            return response_content
+            
         except Exception as e:
             logger.error(f"回答生成失败: {str(e)}", exc_info=True)
             error_msg = "分析内容时出现错误，以下是找到的信息摘要：\n\n" if query_lang.startswith('zh') else "Error occurred during analysis. Here is a summary of the information found:\n\n"
@@ -593,7 +651,7 @@ class AdvancedWebSearchTool:
             return self.result_cache[cache_key]
         
         # 使用新的API端点
-        url = f"http://8.216.81.217:8000/search"
+        url = f"http://8.216.81.217:8004/search"
         params = {
             "keyword": query
         }

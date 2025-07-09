@@ -16,7 +16,7 @@ load_dotenv()
 from src.utils.logging_config import setup_root_logging
 setup_root_logging()
 
-from src.agent import tax_agent
+from src.agent import async_tax_agent
 from src.scheduler.news_crawler import NewsCrawler
 from utils.response_util import ResponseUtil
 from src.middleware.exception_middleware import setup_exception_handling
@@ -64,7 +64,7 @@ async def query(
     thread_id: Optional[str] = Form(None),
     files: List[UploadFile] = File(default=[])
 ):
-    """处理问答请求（支持可选文件上传）
+    """处理问答请求（支持可选文件上传） - 完全异步版本
     
     Args:
         request: FastAPI请求对象
@@ -92,7 +92,7 @@ async def query(
         )
     
     # 使用提供的thread_id或生成新的uuid
-    thread_id = thread_id or f"thread_{uuid.uuid4().hex}"
+    thread_id = thread_id or f"async_thread_{uuid.uuid4().hex}"
     
     # 处理上传文件
     temp_file_paths = []
@@ -117,17 +117,19 @@ async def query(
         # 记录请求日志
         file_count = len(temp_file_paths)
         request_type = "带文件的查询" if file_count > 0 else "纯文本查询"
-        logger.info(f"处理{request_type}请求: {text[:100]}...", extra={
+        logger.info(f"处理异步{request_type}请求: {text[:100]}...", extra={
             'trace_id': trace_id,
             'thread_id': thread_id,
-            'file_count': file_count
+            'file_count': file_count,
+            'execution_mode': 'async_only'
         })
         
-        # 调用代理执行查询
-        result = await tax_agent.query(
-            text, 
-            thread_id, 
-            temp_file_paths if temp_file_paths else None
+        # 使用完全异步的agent
+        result = await async_tax_agent.query(
+            question=text,
+            thread_id=thread_id,
+            session_files=temp_file_paths if temp_file_paths else None,
+            user_id=trace_id
         )
         
         # 构建响应数据
@@ -141,14 +143,20 @@ async def query(
             "currency": result.get("currency", "CNY"),
             "token_usage": result.get("token_usage", {}),
             "cost_breakdown": result.get("cost_breakdown", {}),
+            "execution_mode": "async_unified"
         }
         
         # 添加文件信息
         if result.get("file_info"):
             response_data["file_info"] = result["file_info"]
+            
+        # 添加错误信息（如果有）
+        if result.get("error"):
+            response_data["error"] = result["error"]
+            response_data["fallback_used"] = result.get("fallback_used", False)
         
         return ResponseUtil.success(
-            msg="查询成功",
+            msg="异步查询成功",
             data=response_data
         )
         
@@ -161,10 +169,10 @@ async def query(
         context = ErrorContext(
             request_id=trace_id,
             operation="POST /query",
-            component="tax_agent"
+            component="async_tax_agent"
         )
         
-        logger.error(f"查询执行失败: {str(e)}", extra={'trace_id': trace_id})
+        logger.error(f"异步查询执行失败: {str(e)}", extra={'trace_id': trace_id})
         
         raise ExceptionFactory.create_business_exception(
             error_code=ErrorCode.AGENT_QUERY_FAILED,
@@ -181,6 +189,8 @@ async def query(
                     logger.info(f"清理临时文件: {temp_file_path}")
             except Exception as e:
                 logger.warning(f"清理临时文件失败: {temp_file_path}, {e}")
+
+
 
 @app.get("/health")
 async def health_check():

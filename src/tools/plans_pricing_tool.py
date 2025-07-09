@@ -2,6 +2,7 @@
 产品推荐工具
 用于处理C类意图（推荐课程），基于数据库中的产品信息提供个性化推荐
 """
+import asyncio
 import logging
 import os
 from typing import Dict, Any, List
@@ -60,31 +61,13 @@ class PlansAndPricingTool:
             logger.error(f"数据库连接初始化失败: {e}")
             raise
         
-        # 初始化LLM
-        try:
-            from config.llm_config import llm_config
-            
-            from langchain_openai import ChatOpenAI
-            self.llm = ChatOpenAI(
-                model="qwen-max-latest", 
-                api_key=os.getenv("DASHSCOPE_API_KEY"),
-                base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-                temperature=0.3
-            )
-                
-        except Exception as e:
-            logger.error(f"LLM初始化失败: {e}")
-            # 回退到默认配置
-            from langchain_openai import ChatOpenAI
-            self.llm = ChatOpenAI(
-                model="gpt-4o-mini", 
-                api_key=os.getenv("OPENAI_API_KEY"),
-                base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-                temperature=0.3
-            )
+        # 初始化异步LLM客户端
+        from src.utils.llm_client import llm_client
+        self.llm_client = llm_client
+        logger.info("产品推荐工具LLM客户端初始化完成")
     
-    def get_products_from_db(self, user_language: str = None) -> List[Dict]:
-        """从数据库获取产品信息，根据用户语言过滤"""
+    async def get_products_from_db(self, user_language: str = None) -> List[Dict]:
+        """从数据库获取产品信息，根据用户语言过滤（异步版本）"""
         try:
             # 根据用户语言构建查询条件
             if user_language:
@@ -96,7 +79,7 @@ class PlansAndPricingTool:
                     ORDER BY type, name
                 """)
                 params = {"language": user_language}
-                logger.info(f"查询语言为 {user_language} 的产品")
+                logger.info(f"异步查询语言为 {user_language} 的产品")
             else:
                 # 查询所有产品
                 query = text("""
@@ -106,7 +89,65 @@ class PlansAndPricingTool:
                     ORDER BY type, name
                 """)
                 params = {}
-                logger.info("查询所有产品")
+                logger.info("异步查询所有产品")
+            
+            # 使用线程池执行同步数据库操作
+            loop = asyncio.get_event_loop()
+            
+            def _execute_query():
+                with self.engine.connect() as conn:
+                    if user_language:
+                        return conn.execute(query, params).fetchall()
+                    else:
+                        return conn.execute(query).fetchall()
+            
+            # 在线程池中执行数据库查询
+            results = await loop.run_in_executor(None, _execute_query)
+                
+            products = []
+            for row in results:
+                product = {
+                    "name": row[0],
+                    "price_cny": float(row[1]) if row[1] else 0.0,
+                    "price_hkd": float(row[2]) if row[2] else 0.0,
+                    "introduction": row[3] or "",
+                    "type": row[4] or "",
+                    "ai_balance": row[5] if row[5] else 0,
+                    "language": row[6] or ""
+                }
+                products.append(product)
+            
+            logger.info(f"异步从数据库获取到{len(products)}个产品")
+            return products
+            
+        except Exception as e:
+            logger.error(f"异步获取产品信息失败: {e}")
+            return []
+    
+    def get_products_from_db_sync(self, user_language: str = None) -> List[Dict]:
+        """从数据库获取产品信息，根据用户语言过滤（同步版本，向后兼容）"""
+        try:
+            # 根据用户语言构建查询条件
+            if user_language:
+                # 查询指定语言的产品
+                query = text("""
+                    SELECT name, price_cny, price_hkd, introduction, type, ai_balance, language
+                    FROM products 
+                    WHERE is_deleted = false AND language = :language
+                    ORDER BY type, name
+                """)
+                params = {"language": user_language}
+                logger.info(f"同步查询语言为 {user_language} 的产品")
+            else:
+                # 查询所有产品
+                query = text("""
+                    SELECT name, price_cny, price_hkd, introduction, type, ai_balance, language
+                    FROM products 
+                    WHERE is_deleted = false
+                    ORDER BY type, name
+                """)
+                params = {}
+                logger.info("同步查询所有产品")
             
             with self.engine.connect() as conn:
                 if user_language:
@@ -127,11 +168,11 @@ class PlansAndPricingTool:
                 }
                 products.append(product)
             
-            logger.info(f"从数据库获取到{len(products)}个产品")
+            logger.info(f"同步从数据库获取到{len(products)}个产品")
             return products
             
         except Exception as e:
-            logger.error(f"获取产品信息失败: {e}")
+            logger.error(f"同步获取产品信息失败: {e}")
             return []
     
     def convert_lang_format(self, lang: str) -> str:
@@ -221,31 +262,46 @@ class PlansAndPricingTool:
         }
         return lang_mapping.get(lang, "English")
     
-    def recommend_products(self, query: str, lang: str = "en") -> str:
+    async def recommend_products(self, query: str, lang: str = "en") -> Dict[str, Any]:
         """
-        基于用户查询推荐产品
+        基于用户查询推荐产品（异步版本，支持token和成本统计）
         
         Args:
             query: 用户的课程推荐查询
             lang: 用户期望的回复语言 (zh-cn, zh-hk, en)
             
         Returns:
-            str: 产品推荐内容
+            Dict: 包含产品推荐内容和使用统计的字典
         """
         try:
             # 转换语言格式
             db_lang = self.convert_lang_format(lang)
             logger.info(f"用户语言: {lang}, 数据库查询语言: {db_lang}")
             
-            # 获取指定语言的产品信息
-            products = self.get_products_from_db(user_language=db_lang)
+            # 获取指定语言的产品信息（异步）
+            products = await self.get_products_from_db(user_language=db_lang)
             if not products:
+                error_msg = ""
                 if lang in ["zh-cn", "Sim"]:
-                    return "抱歉，暂时无法获取产品信息，请稍后再试。"
+                    error_msg = "抱歉，暂时无法获取产品信息，请稍后再试。"
                 elif lang in ["zh-hk", "Trad"]:
-                    return "抱歉，暫時無法獲取產品信息，請稍後再試。"
+                    error_msg = "抱歉，暫時無法獲取產品信息，請稍後再試。"
                 else:
-                    return "Sorry, unable to retrieve product information at the moment. Please try again later."
+                    error_msg = "Sorry, unable to retrieve product information at the moment. Please try again later."
+                
+                return {
+                    "response": error_msg,
+                    "usage_info": {
+                        "request_id": "error",
+                        "model_used": "database_query",
+                        "provider": "local",
+                        "total_cost": 0.0,
+                        "currency": "CNY",
+                        "token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                        "cost_breakdown": {"input_cost": 0, "output_cost": 0, "total_cost": 0},
+                        "processing_time": 0.0
+                    }
+                }
             
             # 格式化产品信息
             products_info = self.format_products_info(products, lang)
@@ -258,35 +314,133 @@ class PlansAndPricingTool:
                 language=language_name
             )
             
-            # 调用LLM生成推荐
-            from langchain_core.messages import SystemMessage, HumanMessage
+            user_message = f"Please provide product recommendations for: {query}"
             
-            messages = [
-                SystemMessage(content=full_prompt),
-                HumanMessage(content=f"Please provide product recommendations for: {query}")
-            ]
-            
-            response = self.llm.invoke(messages)
+            # 调用异步LLM生成推荐，使用qwen-max-latest模型
+            response_content, usage_info = await self.llm_client.simple_chat(
+                user_message=user_message,
+                system_message=full_prompt,
+                model_name="qwen-max-latest"
+            )
             
             logger.info("产品推荐生成成功")
-            return response.content
+            
+            # 构建包含使用统计的完整结果
+            result = {
+                "response": response_content,
+                "usage_info": {
+                    "request_id": usage_info.request_id,
+                    "model_used": usage_info.model_used,
+                    "provider": usage_info.provider,
+                    "total_cost": usage_info.total_cost,
+                    "currency": usage_info.currency,
+                    "token_usage": usage_info.token_usage,
+                    "cost_breakdown": usage_info.cost_breakdown,
+                    "processing_time": usage_info.processing_time
+                }
+            }
+            
+            logger.info(f"产品推荐完成 - 模型: {usage_info.model_used}, "
+                       f"Token: {usage_info.token_usage.get('total_tokens', 0)}, "
+                       f"成本: {usage_info.total_cost}{usage_info.currency}")
+            
+            return result
                 
         except Exception as e:
             logger.error(f"产品推荐生成失败: {e}")
             # 根据语言返回错误信息
+            error_msg = ""
             if lang in ["zh-cn", "Sim"]:
-                return "抱歉，产品推荐服务暂时不可用，请稍后再试。如有紧急需求，请联系我们的客服团队。"
+                error_msg = "抱歉，产品推荐服务暂时不可用，请稍后再试。如有紧急需求，请联系我们的客服团队。"
             elif lang in ["zh-hk", "Trad"]:
-                return "抱歉，產品推薦服務暫時不可用，請稍後再試。如有緊急需求，請聯繫我們的客服團隊。"
+                error_msg = "抱歉，產品推薦服務暫時不可用，請稍後再試。如有緊急需求，請聯繫我們的客服團隊。"
             else:
-                return "Sorry, the product recommendation service is temporarily unavailable. Please try again later or contact our customer service team for urgent inquiries."
+                error_msg = "Sorry, the product recommendation service is temporarily unavailable. Please try again later or contact our customer service team for urgent inquiries."
+            
+            return {
+                "response": error_msg,
+                "usage_info": {
+                    "request_id": "error",
+                    "model_used": "fallback",
+                    "provider": "local",
+                    "total_cost": 0.0,
+                    "currency": "CNY",
+                    "token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                    "cost_breakdown": {"input_cost": 0, "output_cost": 0, "total_cost": 0},
+                    "processing_time": 0.0
+                }
+            }
+    
+    def recommend_products_sync(self, query: str, lang: str = "en") -> str:
+        """
+        基于用户查询推荐产品（同步版本，向后兼容），使用同步HTTP客户端
+        
+        Args:
+            query: 用户的课程推荐查询
+            lang: 用户期望的回复语言 (zh-cn, zh-hk, en)
+            
+        Returns:
+            str: 产品推荐内容
+        """
+        try:
+            # 使用同步LLM客户端
+            from src.utils.sync_llm_client import sync_llm_client
+            
+            # 转换语言格式
+            db_lang = self.convert_lang_format(lang)
+            logger.info(f"用户语言: {lang}, 数据库查询语言: {db_lang}")
+            
+            # 获取指定语言的产品信息（同步）
+            products = self.get_products_from_db_sync(user_language=db_lang)
+            if not products:
+                return self._get_fallback_recommendation(lang)
+            
+            # 格式化产品信息
+            products_info = self.format_products_info(products, lang)
+            language_name = self.get_language_name(lang)
+            
+            # 构建prompt
+            full_prompt = PRODUCT_RECOMMENDATION_PROMPT.format(
+                products_info=products_info,
+                user_query=query,
+                language=language_name
+            )
+            
+            user_message = f"Please provide product recommendations for: {query}"
+            
+            # 调用同步LLM生成推荐，使用qwen-max-latest模型
+            response_content, usage_info = sync_llm_client.simple_chat(
+                user_message=user_message,
+                system_message=full_prompt,
+                model_name="qwen-max-latest"
+            )
+            
+            logger.info("同步产品推荐生成成功")
+            logger.info(f"同步产品推荐完成 - 模型: {usage_info.model_used}, "
+                       f"Token: {usage_info.token_usage.get('total_tokens', 0)}, "
+                       f"成本: {usage_info.total_cost}{usage_info.currency}")
+            
+            return response_content
+                
+        except Exception as e:
+            logger.error(f"同步产品推荐生成失败: {e}")
+            return self._get_fallback_recommendation(lang)
+    
+    def _get_fallback_recommendation(self, lang: str) -> str:
+        """获取默认产品推荐"""
+        if lang in ["zh-cn", "Sim"]:
+            return "抱歉，产品推荐服务暂时不可用，请稍后再试。如有紧急需求，请联系我们的客服团队获取详细的课程和定价信息。"
+        elif lang in ["zh-hk", "Trad"]:
+            return "抱歉，產品推薦服務暫時不可用，請稍後再試。如有緊急需求，請聯繫我們的客服團隊獲取詳細的課程和定價信息。"
+        else:
+            return "Sorry, the product recommendation service is temporarily unavailable. Please try again later or contact our customer service team for detailed course and pricing information."
 
 # 创建工具实例
 plans_pricing_tool_instance = PlansAndPricingTool()
 
-# 封装为StructuredTool
+# 封装为StructuredTool（同步版本，向后兼容）
 plans_pricing_tool = StructuredTool.from_function(
-    func=plans_pricing_tool_instance.recommend_products,
+    func=plans_pricing_tool_instance.recommend_products_sync,
     name="plans_pricing",
     description="基于用户需求从数据库产品信息中提供个性化的课程和产品推荐，包括价格信息。",
     args_schema=ProductRecommendationInput

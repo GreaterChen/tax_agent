@@ -6,7 +6,6 @@ import logging
 from typing import Dict, Any
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
-from langchain_openai import ChatOpenAI
 import os
 
 logger = logging.getLogger(__name__)
@@ -40,29 +39,23 @@ class SelfIntroductionTool:
     """自我介绍工具"""
     
     def __init__(self):
-        # 使用配置中的LLM进行自我介绍
-        self.llm = ChatOpenAI(
-            model="qwen-max-latest", 
-            api_key=os.getenv("DASHSCOPE_API_KEY"),
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-            temperature=0  # 设置为0以获得更稳定的结果
-        )
+        # 使用异步LLM客户端进行自我介绍
+        from src.utils.llm_client import llm_client
+        self.llm_client = llm_client
         logger.info("自我介绍工具初始化完成")
     
-    def introduce_self(self, query: str, lang: str = "en") -> str:
+    async def introduce_self(self, query: str, lang: str = "en") -> Dict[str, Any]:
         """
-        生成自我介绍
+        生成自我介绍（异步版本，支持token和成本统计）
         
         Args:
             query: 用户的身份询问
             lang: 用户期望的回复语言 (zh-cn, zh-hk, en)
             
         Returns:
-            str: 自我介绍内容
+            Dict: 包含自我介绍内容和使用统计的字典
         """
         try:
-            from langchain_core.messages import SystemMessage, HumanMessage
-            
             # 转换语言描述
             lang_description = {
                 "zh-cn": "简体中文",
@@ -74,34 +67,114 @@ class SelfIntroductionTool:
                 "Eng": "English"
             }.get(lang, "English")
             
-            # 构建消息
-            messages = [
-                SystemMessage(content=SELF_INTRODUCTION_PROMPT),
-                HumanMessage(content=f"用户问题: {query}\n请根据用户期望的语言({lang_description})进行回复。")
-            ]
+            user_message = f"用户问题: {query}\n请根据用户期望的语言({lang_description})进行回复。"
             
-            # 调用LLM生成自我介绍
-            response = self.llm.invoke(messages)
+            # 调用异步LLM生成自我介绍，使用qwen-max-latest模型
+            response_content, usage_info = await self.llm_client.simple_chat(
+                user_message=user_message,
+                system_message=SELF_INTRODUCTION_PROMPT,
+                model_name="qwen-max-latest"
+            )
             
             logger.info("自我介绍生成成功")
-            return response.content
+            
+            # 构建包含使用统计的完整结果
+            result = {
+                "response": response_content,
+                "usage_info": {
+                    "request_id": usage_info.request_id,
+                    "model_used": usage_info.model_used,
+                    "provider": usage_info.provider,
+                    "total_cost": usage_info.total_cost,
+                    "currency": usage_info.currency,
+                    "token_usage": usage_info.token_usage,
+                    "cost_breakdown": usage_info.cost_breakdown,
+                    "processing_time": usage_info.processing_time
+                }
+            }
+            
+            logger.info(f"自我介绍完成 - 模型: {usage_info.model_used}, "
+                       f"Token: {usage_info.token_usage.get('total_tokens', 0)}, "
+                       f"成本: {usage_info.total_cost}{usage_info.currency}")
+            
+            return result
                 
         except Exception as e:
             logger.error(f"自我介绍生成失败: {e}")
             # 根据语言返回默认介绍
+            default_response = ""
             if lang in ["zh-cn", "Sim"]:
-                return "我是HKCA Learning Media Limited开发的香港税务专家AI系统，是智能香港税务AI项目的一部分。我可以帮助您解答香港税务相关问题。"
+                default_response = "我是HKCA Learning Media Limited开发的香港税务专家AI系统，是智能香港税务AI项目的一部分。我可以帮助您解答香港税务相关问题。"
             elif lang in ["zh-hk", "Trad"]:
-                return "我是HKCA Learning Media Limited開發的香港稅務專家AI系統，是智能香港稅務AI項目的一部分。我可以幫助您解答香港稅務相關問題。"
+                default_response = "我是HKCA Learning Media Limited開發的香港稅務專家AI系統，是智能香港稅務AI項目的一部分。我可以幫助您解答香港稅務相關問題。"
             else:
-                return "I am a Hong Kong Tax expert AI system developed by HKCA Learning Media Limited, part of the Smart Hong Kong Tax AI Project. I can help you with Hong Kong taxation related questions."
+                default_response = "I am a Hong Kong Tax expert AI system developed by HKCA Learning Media Limited, part of the Smart Hong Kong Tax AI Project. I can help you with Hong Kong taxation related questions."
+            
+            return {
+                "response": default_response,
+                "usage_info": {
+                    "request_id": "error",
+                    "model_used": "fallback",
+                    "provider": "local",
+                    "total_cost": 0.0,
+                    "currency": "CNY",
+                    "token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                    "cost_breakdown": {"input_cost": 0, "output_cost": 0, "total_cost": 0},
+                    "processing_time": 0.0
+                }
+            }
+    
+    def introduce_self_sync(self, query: str, lang: str = "en") -> str:
+        """
+        生成自我介绍（同步版本，向后兼容），使用线程池执行异步版本
+        
+        Args:
+            query: 用户的身份询问
+            lang: 用户期望的回复语言 (zh-cn, zh-hk, en)
+            
+        Returns:
+            str: 自我介绍内容
+        """
+        try:
+            # 使用线程池执行异步版本
+            import asyncio
+            
+            # 获取当前事件循环或创建新的
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # 在线程池中执行异步方法
+            async def _async_introduce():
+                result = await self.introduce_self(query, lang)
+                return result.get("response", "")
+            
+            response_content = loop.run_until_complete(_async_introduce())
+            logger.info("同步自我介绍生成成功")
+            
+            return response_content
+                
+        except Exception as e:
+            logger.error(f"同步自我介绍生成失败: {e}")
+            return self._get_fallback_introduction(lang)
+    
+    def _get_fallback_introduction(self, lang: str) -> str:
+        """获取默认自我介绍"""
+        if lang in ["zh-cn", "Sim"]:
+            return "我是HKCA Learning Media Limited开发的香港税务专家AI系统，是智能香港税务AI项目的一部分。我可以帮助您解答香港税务相关问题。"
+        elif lang in ["zh-hk", "Trad"]:
+            return "我是HKCA Learning Media Limited開發的香港稅務專家AI系統，是智能香港稅務AI項目的一部分。我可以幫助您解答香港稅務相關問題。"
+        else:
+            return "I am a Hong Kong Tax expert AI system developed by HKCA Learning Media Limited, part of the Smart Hong Kong Tax AI Project. I can help you with Hong Kong taxation related questions."
 
 # 创建工具实例
 self_introduction_tool_instance = SelfIntroductionTool()
 
-# 封装为StructuredTool
+# 封装为StructuredTool（同步版本，向后兼容）
 self_introduction_tool = StructuredTool.from_function(
-    func=self_introduction_tool_instance.introduce_self,
+    func=self_introduction_tool_instance.introduce_self_sync,
     name="self_introduction",
     description="处理用户对系统身份的询问，提供专业的自我介绍。",
     args_schema=SelfIntroductionInput

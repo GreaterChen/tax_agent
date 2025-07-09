@@ -51,40 +51,10 @@ class FinalSummaryTool:
     
     def __init__(self):
         """初始化最终汇总工具"""
-        try:
-            from config.llm_config import llm_config
-            
-            # 使用LLMConfig对象获取最优的模型
-            available_llms = llm_config.get_available_llms()
-            
-            # 优先使用第一个可用的模型
-            if available_llms:
-                first_llm = available_llms[0]
-                self.llm = first_llm.get("llm")
-                logger.info(f"最终汇总工具初始化完成，使用模型: {first_llm.get('name')}")
-            else:
-                # 如果没有配置的模型，使用默认的ChatOpenAI
-                from langchain_openai import ChatOpenAI
-                import os
-                self.llm = ChatOpenAI(
-                    model="gpt-4o-mini", 
-                    api_key=os.getenv("OPENAI_API_KEY"),
-                    base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-                    temperature=0.2  # 较低的temperature确保回答准确性
-                )
-                logger.warning("未找到任何配置的模型，使用默认模型")
-                
-        except Exception as e:
-            logger.error(f"最终汇总工具初始化失败: {e}")
-            # 回退到默认配置
-            from langchain_openai import ChatOpenAI
-            import os
-            self.llm = ChatOpenAI(
-                model="gpt-4o-mini", 
-                api_key=os.getenv("OPENAI_API_KEY"),
-                base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-                temperature=0.2
-            )
+        # 使用异步LLM客户端进行最终汇总
+        from src.utils.llm_client import llm_client
+        self.llm_client = llm_client
+        logger.info("最终汇总工具初始化完成")
     
     def format_conversation_history(self, messages: List[BaseMessage]) -> str:
         """格式化对话历史"""
@@ -201,10 +171,10 @@ class FinalSummaryTool:
             logger.error(f"格式化工具结果失败: {e}")
             return f"工具结果格式化错误: {str(e)}"
     
-    def generate_final_summary(self, messages: List[BaseMessage], intention_result: Dict, 
-                             tool_result: Union[str, List[Dict]], original_query: str) -> str:
+    async def generate_final_summary(self, messages: List[BaseMessage], intention_result: Dict, 
+                             tool_result: Union[str, List[Dict]], original_query: str) -> Dict[str, Any]:
         """
-        生成最终汇总回答
+        生成最终汇总回答（异步版本，支持token和成本统计）
         
         Args:
             messages: 完整的对话消息历史
@@ -213,7 +183,7 @@ class FinalSummaryTool:
             original_query: 用户的原始查询
             
         Returns:
-            str: 最终的汇总回答
+            Dict: 包含汇总回答和使用统计的字典
         """
         try:
             # 格式化各种信息
@@ -231,35 +201,118 @@ class FinalSummaryTool:
                 response_language=response_language
             )
             
-            # 调用LLM生成最终回答
-            from langchain_core.messages import SystemMessage, HumanMessage
-            
-            messages_for_llm = [
-                SystemMessage(content=final_prompt),
-                HumanMessage(content="请基于以上信息生成最终回答")
-            ]
-            
-            response = self.llm.invoke(messages_for_llm)
+            # 调用异步LLM生成最终回答，使用第一个可用的模型
+            response_content, usage_info = await self.llm_client.simple_chat(
+                user_message="请基于以上信息生成最终回答",
+                system_message=final_prompt,
+                model_name=None  # 让服务自动选择模型
+            )
             
             logger.info("最终汇总回答生成成功")
-            return response.content
+            
+            # 构建包含使用统计的完整结果
+            result = {
+                "response": response_content,
+                "usage_info": {
+                    "request_id": usage_info.request_id,
+                    "model_used": usage_info.model_used,
+                    "provider": usage_info.provider,
+                    "total_cost": usage_info.total_cost,
+                    "currency": usage_info.currency,
+                    "token_usage": usage_info.token_usage,
+                    "cost_breakdown": usage_info.cost_breakdown,
+                    "processing_time": usage_info.processing_time
+                }
+            }
+            
+            logger.info(f"最终汇总完成 - 模型: {usage_info.model_used}, "
+                       f"Token: {usage_info.token_usage.get('total_tokens', 0)}, "
+                       f"成本: {usage_info.total_cost}{usage_info.currency}")
+            
+            return result
                 
         except Exception as e:
             logger.error(f"最终汇总回答生成失败: {e}")
             # 返回一个备用回答
             formatted_fallback_results = self.format_tool_results(tool_result)
             
+            fallback_response = ""
             if "简体中文" in self.determine_response_language(intention_result, original_query):
-                return f"抱歉，在生成最终回答时遇到了问题。不过根据您的查询，这里是工具执行的结果：\n\n{formatted_fallback_results}\n\n如需进一步帮助，请重新提问或联系我们的客服团队。"
+                fallback_response = f"抱歉，在生成最终回答时遇到了问题。不过根据您的查询，这里是工具执行的结果：\n\n{formatted_fallback_results}\n\n如需进一步帮助，请重新提问或联系我们的客服团队。"
             else:
-                return f"Sorry, there was an issue generating the final response. However, based on your query, here's the tool execution result:\n\n{formatted_fallback_results}\n\nFor further assistance, please ask again or contact our customer service team."
+                fallback_response = f"Sorry, there was an issue generating the final response. However, based on your query, here's the tool execution result:\n\n{formatted_fallback_results}\n\nFor further assistance, please ask again or contact our customer service team."
+            
+            return {
+                "response": fallback_response,
+                "usage_info": {
+                    "request_id": "error",
+                    "model_used": "fallback",
+                    "provider": "local",
+                    "total_cost": 0.0,
+                    "currency": "CNY",
+                    "token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                    "cost_breakdown": {"input_cost": 0, "output_cost": 0, "total_cost": 0},
+                    "processing_time": 0.0
+                }
+            }
+    
+    def generate_final_summary_sync(self, messages: List[BaseMessage], intention_result: Dict, 
+                                   tool_result: Union[str, List[Dict]], original_query: str) -> str:
+        """
+        生成最终汇总回答（同步版本，向后兼容），使用线程池执行异步版本
+        
+        Args:
+            messages: 完整的对话消息历史
+            intention_result: 意图识别的结果
+            tool_result: 工具执行的结果，可以是单个字符串或多个工具结果的列表
+            original_query: 用户的原始查询
+            
+        Returns:
+            str: 最终汇总回答内容
+        """
+        try:
+            # 使用线程池执行异步版本
+            import asyncio
+            
+            # 获取当前事件循环或创建新的
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # 在线程池中执行异步方法
+            async def _async_generate():
+                result = await self.generate_final_summary(messages, intention_result, tool_result, original_query)
+                return result.get("response", "")
+            
+            response_content = loop.run_until_complete(_async_generate())
+            logger.info("同步最终汇总回答生成成功")
+            
+            return response_content
+                
+        except Exception as e:
+            logger.error(f"同步最终汇总回答生成失败: {e}")
+            return self._get_fallback_summary(intention_result, tool_result, original_query)
+    
+    def _get_fallback_summary(self, intention_result: Dict, tool_result: Union[str, List[Dict]], original_query: str) -> str:
+        """获取默认最终汇总"""
+        formatted_fallback_results = self.format_tool_results(tool_result)
+        response_language = self.determine_response_language(intention_result, original_query)
+        
+        if "简体中文" in response_language:
+            return f"抱歉，在生成最终回答时遇到了问题。不过根据您的查询，这里是工具执行的结果：\n\n{formatted_fallback_results}\n\n如需进一步帮助，请重新提问或联系我们的客服团队。"
+        elif "繁體中文" in response_language:
+            return f"抱歉，在生成最終回答時遇到了問題。不過根據您的查詢，這裡是工具執行的結果：\n\n{formatted_fallback_results}\n\n如需進一步幫助，請重新提問或聯繫我們的客服團隊。"
+        else:
+            return f"Sorry, there was an issue generating the final response. However, based on your query, here's the tool execution result:\n\n{formatted_fallback_results}\n\nFor further assistance, please ask again or contact our customer service team."
 
 # 创建工具实例
 final_summary_tool_instance = FinalSummaryTool()
 
-# 封装为StructuredTool
+# 封装为StructuredTool（同步版本，向后兼容）
 final_summary_tool = StructuredTool.from_function(
-    func=final_summary_tool_instance.generate_final_summary,
+    func=final_summary_tool_instance.generate_final_summary_sync,
     name="final_summary",
     description="汇总所有上下文信息和工具执行结果，生成用户的最终回答。",
     args_schema=FinalSummaryInput

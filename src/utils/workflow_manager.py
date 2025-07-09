@@ -19,6 +19,7 @@ from src.tools.self_introduction import self_introduction_tool
 from src.tools.general_response import general_response_tool
 from src.tools.plans_pricing_tool import plans_pricing_tool
 from src.tools.final_summary import final_summary_tool
+from src.utils.tools_manager import tools_manager
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +39,9 @@ class WorkflowManager:
         # 注释：移除了总结功能以简化实现
         # 基于意图识别的工作流不需要复杂的消息总结
         
-        def intention_recognition_node(state):
-            """意图识别节点 - 必须执行的第一步，包含容错处理"""
-            logger.info("开始执行意图识别")
+        async def intention_recognition_node(state):
+            """意图识别节点 - 必须执行的第一步，包含容错处理（异步版本）"""
+            logger.info("开始执行异步意图识别")
             
             try:
                 # 获取消息历史 - 如果没有messages就报错
@@ -61,8 +62,8 @@ class WorkflowManager:
                     elif isinstance(msg, AIMessage):
                         message_history.append({"role": "assistant", "content": msg.content})
                 
-                # 调用意图识别工具
-                intention_result = intention_recognition_tool.func(messages=message_history)
+                # 调用异步意图识别工具
+                intention_result = await tools_manager.intention_recognition(message_history)
                 
                 # 验证意图识别结果的格式
                 if not isinstance(intention_result, dict):
@@ -98,7 +99,7 @@ class WorkflowManager:
                 context["original_query"] = original_query
                 context["skip_tools"] = False  # 正常执行工具
                 
-                logger.info(f"意图识别完成: {intention_result}")
+                logger.info(f"异步意图识别完成: {intention_result}")
                 
                 return {
                     "context": context,
@@ -106,7 +107,7 @@ class WorkflowManager:
                 }
                 
             except Exception as e:
-                logger.error(f"意图识别失败: {e}")
+                logger.error(f"异步意图识别失败: {e}")
                 
                 # 提取用户的原始查询
                 original_query = ""
@@ -121,7 +122,7 @@ class WorkflowManager:
                 context["original_query"] = original_query
                 context["intention_recognition_error"] = str(e)  # 记录错误信息
                 
-                logger.warning(f"意图识别失败，将跳过工具执行直接进入总结阶段: {e}")
+                logger.warning(f"异步意图识别失败，将跳过工具执行直接进入总结阶段: {e}")
                 
                 return {
                     "context": context,
@@ -140,25 +141,21 @@ class WorkflowManager:
                 logger.info("继续执行工具")
                 return "multi_tool_executor"
         
-        def multi_tool_executor_node(state):
-            """多工具执行器节点 - 根据多个意图顺序执行相应的工具"""
+        async def multi_tool_executor_node(state):
+            """多工具执行器节点 - 根据多个意图异步执行相应的工具"""
             try:
-                logger.info("开始执行多工具处理")
+                logger.info("开始执行异步多工具处理")
                 
                 context = state["context"]
                 intention_result = context["intention_result"]
                 intentions = intention_result["Intentions"]
                 lang = intention_result.get("Lang", "en")
                 
-                # 存储所有工具的执行结果
-                tool_results = []
-                
-                # 按顺序处理每个意图，但先去重
+                # 去重处理
                 unique_intentions = []
                 seen_codes = set()
                 for intention in intentions:
                     code = intention["Code"]
-                    # 对于相同的意图代码，只保留第一个
                     if code not in seen_codes:
                         unique_intentions.append(intention)
                         seen_codes.add(code)
@@ -166,90 +163,49 @@ class WorkflowManager:
                         logger.warning(f"检测到重复的意图代码 {code}，已跳过")
                 
                 logger.info(f"去重后处理{len(unique_intentions)}个意图: {[intent['Code'] for intent in unique_intentions]}")
-                for i, intention in enumerate(unique_intentions):
-                    code = intention["Code"]
-                    content = intention["Content"]
-                    
-                    logger.info(f"处理第{i+1}个意图: Code={code}, Content={content[:100]}...")
-                    
-                    try:
-                        if code == "A":  # 做题家 -> Examist工具
-                            logger.info("调用Examist工具")
-                            result = examist_tool.func(query=content)
-                            tool_results.append({
-                                "tool": "examist",
-                                "intention": intention,
-                                "result": result,
-                                "success": True
-                            })
-                            
-                        elif code == "B":  # 一般询问 -> websearch工具
-                            logger.info("调用网络搜索工具")
-                            result = advanced_web_search_tool.func(query=content)
-                            tool_results.append({
-                                "tool": "web_search",
-                                "intention": intention,
-                                "result": result,
-                                "success": True
-                            })
-                            
-                        elif code == "C":  # 推荐课程 -> Plans and Pricing
-                            logger.info("调用课程计划和定价工具")
-                            result = plans_pricing_tool.func(query=content, lang=lang)
-                            tool_results.append({
-                                "tool": "plans_pricing",
-                                "intention": intention,
-                                "result": result,
-                                "success": True
-                            })
-                            
-                        elif code == "D":  # 你是谁 -> Self introduction
-                            logger.info("调用自我介绍工具")
-                            result = self_introduction_tool.func(query=content, lang=lang)
-                            tool_results.append({
-                                "tool": "self_introduction",
-                                "intention": intention,
-                                "result": result,
-                                "success": True
-                            })
-                            
-                        elif code == "E":  # 没用的问题 -> qwen plus一轮游
-                            logger.info("调用通用回复工具")
-                            result = general_response_tool.func(query=content, lang=lang)
-                            tool_results.append({
-                                "tool": "general_response",
-                                "intention": intention,
-                                "result": result,
-                                "success": True
-                            })
-                            
-                        else:
-                            # 未知意图代码，使用通用回复工具
-                            logger.warning(f"未知的意图代码: {code}，使用通用回复工具")
-                            result = general_response_tool.func(query=content, lang=lang)
-                            tool_results.append({
-                                "tool": "general_response_fallback",
-                                "intention": intention,
-                                "result": result,
-                                "success": True
-                            })
-                            
-                    except Exception as tool_error:
-                        logger.error(f"执行意图{i+1}的工具时失败: {tool_error}")
-                        # 对于A类意图（examist），不进行容错处理，直接抛出异常
-                        if code == "A":
-                            raise tool_error
-                        else:
-                            # 对于其他工具，记录错误但继续执行
-                            tool_results.append({
-                                "tool": f"error_{code}",
-                                "intention": intention,
-                                "result": f"工具执行失败: {str(tool_error)}",
-                                "success": False,
-                                "error": str(tool_error)
-                            })
                 
-                logger.info(f"多工具执行完成，原始意图{len(intentions)}个，去重后{len(unique_intentions)}个，共执行了{len(tool_results)}个工具")
+                # 使用异步工具管理器并发执行工具
+                # 转换意图格式以适配异步工具管理器
+                processed_intentions = []
+                for intention in unique_intentions:
+                    processed_intention = {
+                        "Code": intention["Code"],
+                        "Content": intention["Content"],
+                        "Lang": lang
+                    }
+                    processed_intentions.append(processed_intention)
+                
+                # 获取原始查询
+                original_query = context["original_query"]
+                
+                # 异步并发执行所有工具
+                logger.info("开始异步并发执行工具")
+                tool_result_strings = await tools_manager.execute_tools_concurrently(
+                    processed_intentions, 
+                    original_query
+                )
+                
+                # 构建结果
+                tool_results = []
+                for i, (intention, result_str) in enumerate(zip(unique_intentions, tool_result_strings)):
+                    tool_name_map = {
+                        "A": "examist",
+                        "B": "web_search", 
+                        "C": "plans_pricing",
+                        "D": "self_introduction",
+                        "E": "general_response"
+                    }
+                    
+                    tool_name = tool_name_map.get(intention["Code"], "general_response")
+                    
+                    tool_results.append({
+                        "tool": tool_name,
+                        "intention": intention,
+                        "result": result_str,
+                        "success": True
+                    })
+                
+                logger.info(f"异步多工具执行完成，处理了{len(tool_results)}个工具")
                 
                 # 将所有工具结果保存到context中
                 context["tool_results"] = tool_results
@@ -260,12 +216,11 @@ class WorkflowManager:
                 }
                     
             except Exception as e:
-                logger.error(f"多工具执行器失败: {e}")
-                # 如果是A类意图的错误，直接传播
-                if any(intention.get("Code") == "A" for intention in context.get("intention_result", {}).get("Intentions", [])):
-                    raise e
+                logger.error(f"异步多工具执行器失败: {e}")
                 
-                # 否则创建错误结果
+                context = state.get("context", {})
+                
+                # 创建错误结果
                 context["tool_results"] = [{
                     "tool": "multi_tool_executor_error",
                     "intention": {"Code": "ERROR", "Content": "多工具执行器失败"},
@@ -279,10 +234,10 @@ class WorkflowManager:
                     "context": context
                 }
         
-        def final_summary_node(state):
-            """最终汇总节点 - 生成最终回答"""
+        async def final_summary_node(state):
+            """最终汇总节点 - 生成最终回答（异步版本）"""
             try:
-                logger.info("执行最终汇总")
+                logger.info("执行异步最终汇总")
                 
                 context = state["context"]
                 original_query = context["original_query"]
@@ -290,53 +245,17 @@ class WorkflowManager:
                 skip_tools = context.get("skip_tools", False)
                 
                 if skip_tools:
-                    # 如果跳过了工具执行，让大模型直接基于问题回答
-                    logger.info("意图识别失败或为空，让大模型直接回答用户问题")
-                    
-                    # 构建直接回答的prompt
-                    from langchain_core.messages import SystemMessage, HumanMessage
+                    # 如果跳过了工具执行，使用异步工具管理器生成通用回答
+                    logger.info("意图识别失败或为空，使用异步通用回答工具")
                     
                     # 检测语言
                     is_chinese = any(char in original_query for char in "的了吗是中国香港台湾")
+                    lang = "zh-cn" if is_chinese else "en"
                     
-                    if is_chinese:
-                        direct_prompt = f"""你是HKCA Learning Media的专业AI助手，专门提供香港税务和会计服务咨询。
-
-用户问题：{original_query}
-
-请直接基于你的知识为用户提供专业、准确、有帮助的回答。如果涉及具体的税务问题，请提供相关的香港税法条例和实务指导。如果需要更详细的专业建议，请建议用户联系我们的专业顾问团队。
-
-请用中文回答："""
-                    else:
-                        direct_prompt = f"""You are a professional AI assistant at HKCA Learning Media, specializing in Hong Kong taxation and accounting services.
-
-User Question: {original_query}
-
-Please provide a professional, accurate, and helpful response based on your knowledge. If this involves specific tax matters, please provide relevant Hong Kong tax ordinances and practical guidance. If detailed professional advice is needed, please suggest contacting our professional advisory team.
-
-Please respond in English:"""
-                    
-                    # 使用配置的LLM进行直接回答
                     try:
-                        from config.llm_config import llm_config
-                        available_llms = llm_config.get_available_llms()
-                        if available_llms:
-                            llm = available_llms[0]["llm"]
-                        else:
-                            # 备用LLM
-                            from langchain_openai import ChatOpenAI
-                            import os
-                            llm = ChatOpenAI(
-                                model="gpt-4o-mini",
-                                api_key=os.getenv("OPENAI_API_KEY"),
-                                temperature=0.2
-                            )
-                        
-                        response = llm.invoke([HumanMessage(content=direct_prompt)])
-                        final_response = response.content
-                        
-                    except Exception as llm_error:
-                        logger.error(f"直接回答生成失败: {llm_error}")
+                        final_response = await tools_manager.general_response(original_query, lang)
+                    except Exception as general_error:
+                        logger.error(f"异步通用回答失败: {general_error}")
                         if is_chinese:
                             final_response = f"抱歉，我在处理您的问题时遇到了技术问题。您的问题是：{original_query}\n\n请稍后重试或联系我们的客服团队获得帮助。"
                         else:
@@ -347,15 +266,26 @@ Please respond in English:"""
                     intention_result = context["intention_result"]
                     tool_results = context["tool_results"]
                     
-                    # 调用最终汇总工具，现在需要传递多个工具结果
-                    final_response = final_summary_tool.func(
-                        messages=messages,
-                        intention_result=intention_result,
-                        tool_result=tool_results,  # 现在传递的是工具结果列表
-                        original_query=original_query
-                    )
+                    # 使用异步工具管理器进行最终汇总
+                    try:
+                        final_response = await tools_manager.final_summary(
+                            query=original_query,
+                            tool_results=tool_results
+                        )
+                    except Exception as summary_error:
+                        logger.error(f"异步最终汇总工具失败: {summary_error}")
+                        # 回退到简单的结果合并
+                        successful_results = [tr for tr in tool_results if tr.get("success", False)]
+                        if successful_results:
+                            combined_result = "\n\n".join([
+                                f"**{tr['tool']}工具结果:**\n{tr['result']}" 
+                                for tr in successful_results
+                            ])
+                            final_response = f"根据您的查询，我为您提供以下信息：\n\n{combined_result}"
+                        else:
+                            final_response = "抱歉，在处理您的查询时遇到了问题，请稍后重试。"
                 
-                logger.info("最终汇总完成")
+                logger.info("异步最终汇总完成")
                 
                 # 将最终回答添加到消息历史中
                 final_messages = list(messages)
@@ -367,7 +297,7 @@ Please respond in English:"""
                 }
                     
             except Exception as e:
-                logger.error(f"最终汇总失败: {e}")
+                logger.error(f"异步最终汇总失败: {e}")
                 
                 # 根据情况生成fallback回答
                 context = state["context"]

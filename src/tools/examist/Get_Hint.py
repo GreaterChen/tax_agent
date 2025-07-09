@@ -38,5 +38,5 @@ def Get_Hint(fields: list) -> str:
         # 任何错误都静默处理,直接返回空字符串
         return ""
 
-a = Get_Hint(["B","D"]) 
-print(a)
+# a = Get_Hint(["B","D"]) 
+# print(a)

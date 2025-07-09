@@ -5,10 +5,9 @@
 import json
 import logging
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
-from langchain_openai import ChatOpenAI
 import os
 
 logger = logging.getLogger(__name__)
@@ -81,13 +80,9 @@ class IntentionRecognitionTool:
     """意图识别工具"""
     
     def __init__(self):
-        # 使用配置中的LLM进行意图识别
-        self.llm = ChatOpenAI(
-            model="qwen-max-latest", 
-            api_key=os.getenv("DASHSCOPE_API_KEY"),
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-            temperature=0  # 设置为0以获得更稳定的结果
-        )
+        # 使用异步LLM客户端进行意图识别
+        from src.utils.llm_client import llm_client
+        self.llm_client = llm_client
         logger.info("意图识别工具初始化完成")
     
     def _extract_json_from_markdown(self, content: str) -> str:
@@ -124,52 +119,109 @@ class IntentionRecognitionTool:
         logger.warning(f"无法从响应中提取JSON，返回原始内容: {content}")
         return content.strip()
     
-    def recognize_intention(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def recognize_intention(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        识别用户意图
+        识别用户意图（异步版本，支持token和成本统计）
         
         Args:
             messages: 对话消息历史
             
         Returns:
-            Dict: 意图识别结果
+            Dict: 包含意图识别结果和使用统计的字典
         """
         try:
             # 构建用于意图识别的完整消息
-            from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-            
-            # 构建消息历史
-            langchain_messages = [SystemMessage(content=INTENTION_RECOGNITION_PROMPT)]
+            formatted_messages = [{"role": "system", "content": INTENTION_RECOGNITION_PROMPT}]
             
             # 添加对话历史
             for msg in messages:
-                if msg.get("role") == "user":
-                    langchain_messages.append(HumanMessage(content=msg.get("content", "")))
-                elif msg.get("role") == "assistant":
-                    langchain_messages.append(AIMessage(content=msg.get("content", "")))
+                if msg.get("role") in ["user", "assistant", "system"]:
+                    formatted_messages.append({
+                        "role": msg.get("role"),
+                        "content": msg.get("content", "")
+                    })
             
-            # 调用LLM进行意图识别
-            response = self.llm.invoke(langchain_messages)
+            # 调用异步LLM进行意图识别，使用qwen-max-latest模型
+            response_content, usage_info = await self.llm_client.chat_completion(
+                messages=formatted_messages,
+                model_name="qwen-max-latest"
+            )
             
             # 清理响应内容，提取JSON
-            cleaned_content = self._extract_json_from_markdown(response.content)
+            cleaned_content = self._extract_json_from_markdown(response_content)
             
             # 解析JSON响应 - 如果失败直接抛出异常
-            result = json.loads(cleaned_content)
-            logger.info(f"意图识别成功: {result}")
+            intention_result = json.loads(cleaned_content)
+            logger.info(f"意图识别成功: {intention_result}")
+            
+            # 构建包含使用统计的完整结果
+            result = {
+                "intention_result": intention_result,
+                "usage_info": {
+                    "request_id": usage_info.request_id,
+                    "model_used": usage_info.model_used,
+                    "provider": usage_info.provider,
+                    "total_cost": usage_info.total_cost,
+                    "currency": usage_info.currency,
+                    "token_usage": usage_info.token_usage,
+                    "cost_breakdown": usage_info.cost_breakdown,
+                    "processing_time": usage_info.processing_time
+                }
+            }
+            
+            logger.info(f"意图识别完成 - 模型: {usage_info.model_used}, "
+                       f"Token: {usage_info.token_usage.get('total_tokens', 0)}, "
+                       f"成本: {usage_info.total_cost}{usage_info.currency}")
+            
             return result
                 
         except Exception as e:
             logger.error(f"意图识别失败: {e}")
             # 直接抛出异常
             raise e
+    
+    def recognize_intention_sync(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        同步版本的意图识别（向后兼容），使用线程池执行异步版本
+        
+        Args:
+            messages: 对话消息历史
+            
+        Returns:
+            Dict: 意图识别结果（保持向后兼容格式）
+        """
+        try:
+            # 使用线程池执行异步版本
+            import asyncio
+            
+            # 获取当前事件循环或创建新的
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # 在线程池中执行异步方法
+            async def _async_recognize():
+                result = await self.recognize_intention(messages)
+                return result.get("intention_result", {})
+            
+            intention_result = loop.run_until_complete(_async_recognize())
+            logger.info(f"同步意图识别成功: {intention_result}")
+            
+            return intention_result
+                
+        except Exception as e:
+            logger.error(f"同步意图识别失败: {e}")
+            # 直接抛出异常
+            raise e
 
 # 创建工具实例
 intention_recognition_tool_instance = IntentionRecognitionTool()
 
-# 封装为StructuredTool
+# 封装为StructuredTool（同步版本，向后兼容）
 intention_recognition_tool = StructuredTool.from_function(
-    func=intention_recognition_tool_instance.recognize_intention,
+    func=intention_recognition_tool_instance.recognize_intention_sync,
     name="intention_recognition",
     description="识别用户查询的意图，将请求分类到相应的处理流程。这是所有查询的第一步，必须执行。",
     args_schema=IntentionRecognitionInput

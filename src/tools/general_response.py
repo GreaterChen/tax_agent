@@ -1,6 +1,6 @@
 """
 通用回复工具
-用于处理E类意图（没用的问题），使用qwen plus一轮游
+用于处理E类意图（没用的问题），使用远程LLM服务
 """
 import logging
 from typing import Dict, Any
@@ -28,66 +28,23 @@ class GeneralResponseTool:
     """通用回复工具"""
     
     def __init__(self):
-        # 使用qwen plus进行通用回复
-        try:
-            from config.llm_config import llm_config
-            
-            # 使用LLMConfig对象的正确方法获取配置
-            available_llms = llm_config.get_available_llms()
-            
-            # 查找qwen plus或qwen相关的配置
-            qwen_llm = None
-            for llm_info in available_llms:
-                model_name = llm_info.get("name", "").lower()
-                if "qwen" in model_name:  # 查找任何包含qwen的模型
-                    qwen_llm = llm_info.get("llm")
-                    logger.info(f"通用回复工具初始化完成，使用模型: {llm_info.get('name')}")
-                    break
-            
-            if qwen_llm:
-                self.llm = qwen_llm
-            else:
-                # 如果没有找到qwen相关模型，使用第一个可用的模型
-                if available_llms:
-                    first_llm = available_llms[0]
-                    self.llm = first_llm.get("llm")
-                    logger.info(f"未找到qwen模型，使用第一个可用模型: {first_llm.get('name')}")
-                else:
-                    # 如果都没有，使用默认的ChatOpenAI
-                    from langchain_openai import ChatOpenAI
-                    self.llm = ChatOpenAI(
-                        model="gpt-4o-mini", 
-                        api_key=os.getenv("OPENAI_API_KEY"),
-                        base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-                        temperature=0.1  # 保持简洁一致的回复
-                    )
-                    logger.warning("未找到任何配置的模型，使用默认模型")
-                
-        except Exception as e:
-            logger.error(f"通用回复工具初始化失败: {e}")
-            # 回退到默认配置
-            from langchain_openai import ChatOpenAI
-            self.llm = ChatOpenAI(
-                model="gpt-4o-mini", 
-                api_key=os.getenv("OPENAI_API_KEY"),
-                base_url=os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1"),
-                temperature=0.1
-            )
+        # 使用异步LLM客户端进行通用回复
+        from src.utils.llm_client import llm_client
+        self.llm_client = llm_client
+        logger.info("通用回复工具初始化完成")
     
-    def generate_response(self, query: str, lang: str = "en") -> str:
+    async def generate_response(self, query: str, lang: str = "en") -> Dict[str, Any]:
         """
-        生成通用回复
+        生成通用回复（异步版本，支持token和成本统计）
         
         Args:
             query: 用户的一般询问
             lang: 用户期望的回复语言 (zh-cn, zh-hk, en)
             
         Returns:
-            str: 通用回复内容
+            Dict: 包含回复内容和使用统计的字典
         """
         try:
-            from langchain_core.messages import SystemMessage, HumanMessage
-            
             # 构建消息，考虑语言偏好
             language_instruction = ""
             if lang in ["zh-cn", "Sim"]:
@@ -97,33 +54,114 @@ class GeneralResponseTool:
             else:
                 language_instruction = "\nPlease reply in English."
             
-            messages = [
-                SystemMessage(content=GENERAL_RESPONSE_PROMPT + language_instruction),
-                HumanMessage(content=query)
-            ]
+            system_prompt = GENERAL_RESPONSE_PROMPT + language_instruction
             
-            # 调用LLM生成回复
-            response = self.llm.invoke(messages)
+            # 调用异步LLM生成回复，使用qwen-plus模型
+            response_content, usage_info = await self.llm_client.simple_chat(
+                user_message=query,
+                system_message=system_prompt,
+                model_name="qwen-plus"
+            )
             
             logger.info("通用回复生成成功")
-            return response.content
+            
+            # 构建包含使用统计的完整结果
+            result = {
+                "response": response_content,
+                "usage_info": {
+                    "request_id": usage_info.request_id,
+                    "model_used": usage_info.model_used,
+                    "provider": usage_info.provider,
+                    "total_cost": usage_info.total_cost,
+                    "currency": usage_info.currency,
+                    "token_usage": usage_info.token_usage,
+                    "cost_breakdown": usage_info.cost_breakdown,
+                    "processing_time": usage_info.processing_time
+                }
+            }
+            
+            logger.info(f"通用回复完成 - 模型: {usage_info.model_used}, "
+                       f"Token: {usage_info.token_usage.get('total_tokens', 0)}, "
+                       f"成本: {usage_info.total_cost}{usage_info.currency}")
+            
+            return result
                 
         except Exception as e:
             logger.error(f"通用回复生成失败: {e}")
             # 根据语言返回默认回复
+            default_response = ""
             if lang in ["zh-cn", "Sim"]:
-                return "抱歉，我不太了解这个问题。如果您有香港税务相关的问题，我很乐意为您解答。"
+                default_response = "抱歉，我不太了解这个问题。如果您有香港税务相关的问题，我很乐意为您解答。"
             elif lang in ["zh-hk", "Trad"]:
-                return "抱歉，我不太了解這個問題。如果您有香港稅務相關的問題，我很樂意為您解答。"
+                default_response = "抱歉，我不太了解這個問題。如果您有香港稅務相關的問題，我很樂意為您解答。"
             else:
-                return "I'm sorry, but I don't know about that. If you have any Hong Kong taxation related questions, I'd be happy to help."
+                default_response = "I'm sorry, but I don't know about that. If you have any Hong Kong taxation related questions, I'd be happy to help."
+            
+            return {
+                "response": default_response,
+                "usage_info": {
+                    "request_id": "error",
+                    "model_used": "fallback",
+                    "provider": "local",
+                    "total_cost": 0.0,
+                    "currency": "CNY",
+                    "token_usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                    "cost_breakdown": {"input_cost": 0, "output_cost": 0, "total_cost": 0},
+                    "processing_time": 0.0
+                }
+            }
+    
+    def generate_response_sync(self, query: str, lang: str = "en") -> str:
+        """
+        生成通用回复（同步版本，向后兼容），使用线程池执行异步版本
+        
+        Args:
+            query: 用户的一般询问
+            lang: 用户期望的回复语言 (zh-cn, zh-hk, en)
+            
+        Returns:
+            str: 通用回复内容
+        """
+        try:
+            # 使用线程池执行异步版本
+            import asyncio
+            
+            # 获取当前事件循环或创建新的
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # 在线程池中执行异步方法
+            async def _async_generate():
+                result = await self.generate_response(query, lang)
+                return result.get("response", "")
+            
+            response_content = loop.run_until_complete(_async_generate())
+            logger.info("同步通用回复生成成功")
+            
+            return response_content
+                
+        except Exception as e:
+            logger.error(f"同步通用回复生成失败: {e}")
+            return self._get_fallback_response(lang)
+    
+    def _get_fallback_response(self, lang: str) -> str:
+        """获取默认回复"""
+        if lang in ["zh-cn", "Sim"]:
+            return "抱歉，我不太了解这个问题。如果您有香港税务相关的问题，我很乐意为您解答。"
+        elif lang in ["zh-hk", "Trad"]:
+            return "抱歉，我不太了解這個問題。如果您有香港稅務相關的問題，我很樂意為您解答。"
+        else:
+            return "I'm sorry, but I don't know about that. If you have any Hong Kong taxation related questions, I'd be happy to help."
 
 # 创建工具实例
 general_response_tool_instance = GeneralResponseTool()
 
-# 封装为StructuredTool
+# 封装为StructuredTool（同步版本，向后兼容）
 general_response_tool = StructuredTool.from_function(
-    func=general_response_tool_instance.generate_response,
+    func=general_response_tool_instance.generate_response_sync,
     name="general_response",
     description="处理一般性询问，提供简洁专业的回复。主要用于处理与税务无关的问题。",
     args_schema=GeneralResponseInput
