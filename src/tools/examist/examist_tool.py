@@ -14,8 +14,6 @@ import logging
 import time
 from pathlib import Path
 from typing import Dict, Optional
-from pydantic import BaseModel, Field
-from langchain_core.tools import StructuredTool
 
 # 添加examist模块路径
 current_dir = Path(__file__).parent
@@ -26,11 +24,6 @@ from .core import core
 
 # 配置日志
 logger = logging.getLogger("examist_tool")
-
-# Input model
-class ExamistInput(BaseModel):
-    """Hong Kong tax question input model"""
-    query: str = Field(..., description="Specific Hong Kong tax question with complete case background and question description")
 
 class ExamistTool:
     """Hong Kong tax expert tool class"""
@@ -106,35 +99,4 @@ class ExamistTool:
             return f"Technical error occurred: {str(e)}"
 
 # 创建工具实例
-examist_tool_instance = ExamistTool()
-
-# Wrap as StructuredTool
-examist_tool = StructuredTool.from_function(
-    func=examist_tool_instance.analyze_tax_query,
-    name="hong_kong_tax_advisor",
-    description="""Professional Hong Kong tax consultation tool. Capable of handling the following types of questions:
-
-🏢 **Corporate Tax**
-- Hong Kong profits tax calculation and planning
-- Corporate tax optimization advice
-- Cross-border tax arrangements
-
-👤 **Personal Tax**  
-- Hong Kong salaries tax related questions
-- Personal assessment election choices
-- Tax resident status determination
-
-🏠 **Property Tax**
-- Hong Kong property tax handling
-- Rental income tax arrangements
-- Property investment tax planning
-
-📄 **Other Taxes**
-- Stamp duty calculations
-- Tax regulation interpretation and application
-- Tax compliance advice
-
-**Usage Requirements:**
-Please ensure your question contains complete factual background and specific consultation needs. The system will provide professional legal analysis based on IRAC structure.""",
-    args_schema=ExamistInput
-) 
+examist_tool_instance = ExamistTool() 

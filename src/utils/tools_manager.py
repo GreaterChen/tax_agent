@@ -12,21 +12,9 @@ class AsyncToolsManager:
     """完全异步的工具管理器"""
     
     def __init__(self):
-        # 导入所有异步工具
-        from src.tools.intention_recognition import intention_recognition_tool
-        from src.tools.general_response import general_response_tool  
-        from src.tools.self_introduction import self_introduction_tool
-        from src.tools.plans_pricing_tool import plans_pricing_tool
-        from src.tools.final_summary import final_summary_tool
-        from src.tools.examist.examist_tool import examist_tool
+        # 导入所有异步工具实例
         from src.tools.web_search.web_search_mini import advanced_web_search_tool
         
-        self.intention_tool = intention_recognition_tool
-        self.general_tool = general_response_tool
-        self.self_intro_tool = self_introduction_tool
-        self.pricing_tool = plans_pricing_tool
-        self.summary_tool = final_summary_tool
-        self.examist_tool = examist_tool
         self.web_search_tool = advanced_web_search_tool
         
         logger.info("异步工具管理器初始化完成")
@@ -34,15 +22,13 @@ class AsyncToolsManager:
     async def intention_recognition(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         """异步意图识别"""
         try:
-            # 由于工具本身可能还是同步的，我们在线程中运行
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None, 
-                self.intention_tool.func,
-                messages
-            )
+            from src.tools.intention_recognition import intention_recognition_tool_instance
+            
+            # 直接调用异步方法
+            result = await intention_recognition_tool_instance.recognize_intention(messages)
+            intention_result = result.get("intention_result", {})
             logger.info("异步意图识别完成")
-            return result
+            return intention_result
         except Exception as e:
             logger.error(f"异步意图识别失败: {e}")
             return {"Intentions": [], "Lang": "en"}

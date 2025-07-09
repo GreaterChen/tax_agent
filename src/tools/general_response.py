@@ -4,8 +4,6 @@
 """
 import logging
 from typing import Dict, Any
-from pydantic import BaseModel, Field
-from langchain_core.tools import StructuredTool
 import os
 
 logger = logging.getLogger(__name__)
@@ -18,11 +16,6 @@ GENERAL_RESPONSE_PROMPT = """** System Prompt **
     Answer briefly with professional tongue and friendly attitude.
     If you don't know and the question is unrelated to taxation, just say you don't know.
     If you know, you can answer, but briefly."""
-
-class GeneralResponseInput(BaseModel):
-    """通用回复输入模型"""
-    query: str = Field(..., description="用户的一般询问")
-    lang: str = Field(default="en", description="用户期望的回复语言 (zh-cn, zh-hk, en)")
 
 class GeneralResponseTool:
     """通用回复工具"""
@@ -110,59 +103,6 @@ class GeneralResponseTool:
                     "processing_time": 0.0
                 }
             }
-    
-    def generate_response_sync(self, query: str, lang: str = "en") -> str:
-        """
-        生成通用回复（同步版本，向后兼容），使用线程池执行异步版本
-        
-        Args:
-            query: 用户的一般询问
-            lang: 用户期望的回复语言 (zh-cn, zh-hk, en)
-            
-        Returns:
-            str: 通用回复内容
-        """
-        try:
-            # 使用线程池执行异步版本
-            import asyncio
-            
-            # 获取当前事件循环或创建新的
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            
-            # 在线程池中执行异步方法
-            async def _async_generate():
-                result = await self.generate_response(query, lang)
-                return result.get("response", "")
-            
-            response_content = loop.run_until_complete(_async_generate())
-            logger.info("同步通用回复生成成功")
-            
-            return response_content
-                
-        except Exception as e:
-            logger.error(f"同步通用回复生成失败: {e}")
-            return self._get_fallback_response(lang)
-    
-    def _get_fallback_response(self, lang: str) -> str:
-        """获取默认回复"""
-        if lang in ["zh-cn", "Sim"]:
-            return "抱歉，我不太了解这个问题。如果您有香港税务相关的问题，我很乐意为您解答。"
-        elif lang in ["zh-hk", "Trad"]:
-            return "抱歉，我不太了解這個問題。如果您有香港稅務相關的問題，我很樂意為您解答。"
-        else:
-            return "I'm sorry, but I don't know about that. If you have any Hong Kong taxation related questions, I'd be happy to help."
 
 # 创建工具实例
-general_response_tool_instance = GeneralResponseTool()
-
-# 封装为StructuredTool（同步版本，向后兼容）
-general_response_tool = StructuredTool.from_function(
-    func=general_response_tool_instance.generate_response_sync,
-    name="general_response",
-    description="处理一般性询问，提供简洁专业的回复。主要用于处理与税务无关的问题。",
-    args_schema=GeneralResponseInput
-) 
+general_response_tool_instance = GeneralResponseTool() 

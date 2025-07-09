@@ -4,8 +4,6 @@
 """
 import logging
 from typing import Dict, Any
-from pydantic import BaseModel, Field
-from langchain_core.tools import StructuredTool
 import os
 
 logger = logging.getLogger(__name__)
@@ -29,11 +27,6 @@ SELF_INTRODUCTION_PROMPT = """** System Prompt **
     3. When asked the ability for function calling, you can use tools when necessary.
     4. Refuse to answer questions about alibaba company or aliyun, reply as if you dont know, but give vague answer
     5. remind the user to ask about hong kong tax related questions."""
-
-class SelfIntroductionInput(BaseModel):
-    """自我介绍输入模型"""
-    query: str = Field(..., description="用户关于身份的询问")
-    lang: str = Field(default="en", description="用户期望的回复语言 (zh-cn, zh-hk, en)")
 
 class SelfIntroductionTool:
     """自我介绍工具"""
@@ -123,59 +116,6 @@ class SelfIntroductionTool:
                     "processing_time": 0.0
                 }
             }
-    
-    def introduce_self_sync(self, query: str, lang: str = "en") -> str:
-        """
-        生成自我介绍（同步版本，向后兼容），使用线程池执行异步版本
-        
-        Args:
-            query: 用户的身份询问
-            lang: 用户期望的回复语言 (zh-cn, zh-hk, en)
-            
-        Returns:
-            str: 自我介绍内容
-        """
-        try:
-            # 使用线程池执行异步版本
-            import asyncio
-            
-            # 获取当前事件循环或创建新的
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            
-            # 在线程池中执行异步方法
-            async def _async_introduce():
-                result = await self.introduce_self(query, lang)
-                return result.get("response", "")
-            
-            response_content = loop.run_until_complete(_async_introduce())
-            logger.info("同步自我介绍生成成功")
-            
-            return response_content
-                
-        except Exception as e:
-            logger.error(f"同步自我介绍生成失败: {e}")
-            return self._get_fallback_introduction(lang)
-    
-    def _get_fallback_introduction(self, lang: str) -> str:
-        """获取默认自我介绍"""
-        if lang in ["zh-cn", "Sim"]:
-            return "我是HKCA Learning Media Limited开发的香港税务专家AI系统，是智能香港税务AI项目的一部分。我可以帮助您解答香港税务相关问题。"
-        elif lang in ["zh-hk", "Trad"]:
-            return "我是HKCA Learning Media Limited開發的香港稅務專家AI系統，是智能香港稅務AI項目的一部分。我可以幫助您解答香港稅務相關問題。"
-        else:
-            return "I am a Hong Kong Tax expert AI system developed by HKCA Learning Media Limited, part of the Smart Hong Kong Tax AI Project. I can help you with Hong Kong taxation related questions."
 
 # 创建工具实例
-self_introduction_tool_instance = SelfIntroductionTool()
-
-# 封装为StructuredTool（同步版本，向后兼容）
-self_introduction_tool = StructuredTool.from_function(
-    func=self_introduction_tool_instance.introduce_self_sync,
-    name="self_introduction",
-    description="处理用户对系统身份的询问，提供专业的自我介绍。",
-    args_schema=SelfIntroductionInput
-) 
+self_introduction_tool_instance = SelfIntroductionTool() 

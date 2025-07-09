@@ -1,5 +1,6 @@
 """香港税务专家工具包"""
 
-from .examist_tool import examist_tool
+# examist工具模块
+from .examist_tool import examist_tool_instance
 
-__all__ = ["examist_tool"] 
+__all__ = ["examist_tool_instance"] 

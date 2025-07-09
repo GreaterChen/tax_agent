@@ -68,6 +68,30 @@ class LLMConfig:
                 "max_summary_tokens": 1000,  # 总结最大token数
                 "enabled": True
             })
+
+            self.llm_configs.append({
+                "name": "qwen-plus",
+                "llm": ChatOpenAI(
+                    api_key=os.getenv("DASHSCOPE_API_KEY"),
+                    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    model="qwen-plus"
+                ),
+                "provider": "qwen",
+                "priority": 2,
+                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "api_key": os.getenv("DASHSCOPE_API_KEY"),
+                "model_name": "qwen-plus",
+                "input_price": 0.0024,  # 每1K tokens价格
+                "output_price": 0.0096,  # 每1K tokens价格
+                "cached_price": 0.00096,  # 命中缓存的价格
+                "currency": "CNY",  # 货币类型
+                "qpm_limit": 1200,
+                "tpm_limit": 1000000,
+                "max_context_tokens": 60000,  # 最大上下文token数
+                "summary_trigger_tokens": 40000,  # 触发总结的token阈值
+                "max_summary_tokens": 1000,  # 总结最大token数
+                "enabled": True
+            })
         
         # gpt-4o-mini配置
         if os.getenv("OPENAI_API_KEY"):

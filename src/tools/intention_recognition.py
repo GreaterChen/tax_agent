@@ -1,14 +1,11 @@
 """
 意图识别工具
-用于识别用户查询的意图并分类到相应的处理流程
+分析用户查询的意图，将其分类到不同的处理流程
 """
 import json
-import logging
 import re
-from typing import List, Dict, Any, Tuple
-from pydantic import BaseModel, Field
-from langchain_core.tools import StructuredTool
-import os
+import logging
+from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +68,6 @@ Rules:
 2. Do not omit any information. Pass along exactly what you received. 
 3. Always translate to english. 
 4. You must pay attention to chat history, the full task might be located partly in the chat history!"""
-
-class IntentionRecognitionInput(BaseModel):
-    """意图识别输入模型"""
-    messages: List[Dict[str, Any]] = Field(..., description="对话消息历史，包含当前用户问题和之前的对话上下文")
 
 class IntentionRecognitionTool:
     """意图识别工具"""
@@ -179,50 +172,6 @@ class IntentionRecognitionTool:
             logger.error(f"意图识别失败: {e}")
             # 直接抛出异常
             raise e
-    
-    def recognize_intention_sync(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        同步版本的意图识别（向后兼容），使用线程池执行异步版本
-        
-        Args:
-            messages: 对话消息历史
-            
-        Returns:
-            Dict: 意图识别结果（保持向后兼容格式）
-        """
-        try:
-            # 使用线程池执行异步版本
-            import asyncio
-            
-            # 获取当前事件循环或创建新的
-            try:
-                loop = asyncio.get_event_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            
-            # 在线程池中执行异步方法
-            async def _async_recognize():
-                result = await self.recognize_intention(messages)
-                return result.get("intention_result", {})
-            
-            intention_result = loop.run_until_complete(_async_recognize())
-            logger.info(f"同步意图识别成功: {intention_result}")
-            
-            return intention_result
-                
-        except Exception as e:
-            logger.error(f"同步意图识别失败: {e}")
-            # 直接抛出异常
-            raise e
 
 # 创建工具实例
-intention_recognition_tool_instance = IntentionRecognitionTool()
-
-# 封装为StructuredTool（同步版本，向后兼容）
-intention_recognition_tool = StructuredTool.from_function(
-    func=intention_recognition_tool_instance.recognize_intention_sync,
-    name="intention_recognition",
-    description="识别用户查询的意图，将请求分类到相应的处理流程。这是所有查询的第一步，必须执行。",
-    args_schema=IntentionRecognitionInput
-) 
+intention_recognition_tool_instance = IntentionRecognitionTool() 

@@ -1,6 +1,6 @@
 """
 工作流管理器
-负责创建和执行基于意图识别的LangGraph工作流
+基于LangGraph实现的异步工作流管理
 """
 import logging
 import json
@@ -13,17 +13,11 @@ from langgraph.checkpoint.memory import MemorySaver
 from src.utils.prompts import SYSTEM_PROMPT
 from src.utils.exceptions import ExceptionFactory, ErrorContext
 from src.utils.error_codes import ErrorCode
-from src.tools.intention_recognition import intention_recognition_tool
 from src.tools.web_search.web_search_mini import advanced_web_search_tool
-from src.tools.self_introduction import self_introduction_tool
-from src.tools.general_response import general_response_tool
-from src.tools.plans_pricing_tool import plans_pricing_tool
-from src.tools.final_summary import final_summary_tool
 from src.utils.tools_manager import tools_manager
 
 logger = logging.getLogger(__name__)
 
-from src.tools.examist.examist_tool import examist_tool
 
 class WorkflowManager:
     """工作流管理器"""
