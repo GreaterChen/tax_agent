@@ -695,13 +695,12 @@ class AdvancedWebSearchTool:
             logger.info(f"使用缓存的搜索结果: {query}")
             return self.result_cache[cache_key]
         
-        # 使用新的API端点
         url = f"http://8.216.81.217:8004/search"
         params = {
             "keyword": query
         }
         
-        # 设置请求头，与_fetch_page_content方法保持一致
+        # 设置请求头
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
@@ -711,15 +710,8 @@ class AdvancedWebSearchTool:
         try:
             response = requests.get(url, params=params, headers=headers, timeout=15)
             
-            # 添加更详细的调试信息
-            logger.info(f"HTTP响应状态码: {response.status_code}")
-            logger.debug(f"HTTP响应头: {dict(response.headers)}")
-            
             response.raise_for_status()
             search_data = response.json()
-            
-            # 记录API响应
-            logger.debug(f"搜索API响应: {json.dumps(search_data, ensure_ascii=False)}")
             
             # 检查API响应结构
             if "results" not in search_data or "results" not in search_data["results"]:
@@ -732,7 +724,7 @@ class AdvancedWebSearchTool:
                 return []
                 
             results = []
-            # 跳过第一个元素（通常是介绍性文本）
+            # 跳过第一个元素
             for item in result_strings[1:]:
                 if not isinstance(item, str):
                     continue
